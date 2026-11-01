@@ -50,6 +50,12 @@ Config.Interiors = {
 Config.Spawn = {
     -- Spawn on the configured point when a player joins the server.
     onJoin = true,
+    -- Wait this long after the player becomes active before teleporting, so the
+    -- game's own initial spawn has finished and cannot drag them back.
+    joinDelay = 1200,
+    -- Safety net: if the client never asks for its spawn (script load race,
+    -- another resource swallowing the event), push it after this many ms.
+    joinFallback = 15000,
     -- Let players use /spawn themselves (staff can always use it).
     allowPlayerCommand = true,
 

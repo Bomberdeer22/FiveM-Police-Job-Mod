@@ -24,7 +24,7 @@ function createHarness(options = {}) {
   const L = lauxlib.luaL_newstate();
   lualib.luaL_openlibs(L);
 
-  const captured = { client: [], server: [], logs: [], chat: [] };
+  const captured = { client: [], server: [], logs: [], chat: [], timers: [] };
   const filesystem = options.files || {};
   const staffIds = new Set(options.staff || []);
   const handlers = {};
@@ -182,10 +182,16 @@ function createHarness(options = {}) {
   lua.lua_setfield(L, -2, to_luastring('date'));
   lua.lua_pop(L, 1);
 
+  // Short timers (save debounce) run inline; long ones (join fallback) are
+  // queued so the tests decide when they fire.
   setGlobal('SetTimeout', () => {
+    const ms = lua.lua_tonumber(L, 1) || 0;
     lua.lua_pushvalue(L, 2);
     const fnRef = lauxlib.luaL_ref(L, lua.LUA_REGISTRYINDEX);
-    callRef(fnRef);
+
+    if (ms < 5000) callRef(fnRef);
+    else captured.timers.push({ ms, fnRef });
+
     return 0;
   });
 
@@ -324,6 +330,10 @@ function createHarness(options = {}) {
       if (events[name] === undefined) throw new Error(`no event "${name}"`);
       setGlobalValue('source', source);
       return callRef(events[name], args);
+    },
+    runTimers() {
+      const timers = captured.timers.splice(0, captured.timers.length);
+      timers.forEach((timer) => callRef(timer.fnRef));
     },
     playerState(id, key) {
       const ref = playerStateRefs[id];
@@ -566,10 +576,20 @@ joiner.fireNet('fk_spawn:server:isSpawnPending', 3);
 let pendingReply = joiner.captured.client.filter((e) => e.name === 'fk_spawn:client:spawnPending').pop();
 check('the client is told it should spawn', !!pendingReply && pendingReply.args[0] === true, pendingReply && pendingReply.args);
 
+check('a fallback spawn is scheduled in case the client never asks',
+  joiner.captured.timers.length === 1 && joiner.captured.timers[0].ms === 15000,
+  joiner.captured.timers.map((t) => t.ms));
+
 joiner.fireNet('fk_spawn:server:spawned', 3, ['michael_bedroom', -812.56, 174.85, 76.74]);
 joiner.captured.client.length = 0;
 joiner.fireNet('fk_spawn:server:isSpawnPending', 3);
 pendingReply = joiner.captured.client.filter((e) => e.name === 'fk_spawn:client:spawnPending').pop();
+const fallbackBefore = joiner.captured.timers.length;
+joiner.runTimers();
+check('the fallback does not fire once the player has spawned',
+  joiner.captured.client.filter((e) => e.name === 'fk_spawn:client:doSpawn').length === 0,
+  { timers: fallbackBefore, spawned: joiner.captured.client.length });
+
 check('other resources are told about the spawn',
   joiner.captured.server.some((e) => e.name === 'fk_spawn:server:playerSpawned'),
   joiner.captured.server);

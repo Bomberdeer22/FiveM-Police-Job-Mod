@@ -341,8 +341,10 @@ RegisterNetEvent('fk_spawn:server:spawned', function(name, x, y, z)
         player.state.fkSpawnPending = false
     end
 
+    log(('Player %d (%s) spawned at %s.'):format(source, GetPlayerName(source) or '?', tostring(name)))
+
     if Config.Debug then
-        log(('Player %d (%s) spawned at %s -> %.2f, %.2f, %.2f'):format(
+        log(('Player %d (%s) landed at %.2f, %.2f, %.2f'):format(
             source, GetPlayerName(source) or '?', tostring(name), tonumber(x) or 0.0,
             tonumber(y) or 0.0, tonumber(z) or 0.0))
     end
@@ -358,6 +360,24 @@ end)
 AddEventHandler('playerJoining', function()
     local source = source
     pendingSpawn[source] = true
+
+    if Config.Debug then
+        log(('player %d joined — spawn pending'):format(source))
+    end
+
+    -- Safety net: if the client never asks (script load race, edited client,
+    -- another resource swallowing the event), push the spawn to them once.
+    SetTimeout(Config.Spawn.joinFallback or 15000, function()
+        if not pendingSpawn[source] then return end
+
+        local point = GetSpawnPoint(GetDefaultSpawnName())
+
+        if not point then return end
+
+        pendingSpawn[source] = nil
+        TriggerClientEvent('fk_spawn:client:doSpawn', source, point)
+        log(('pushed the spawn to player %d (the client never asked for it)'):format(source))
+    end)
 
     local player = Player(source)
 
@@ -472,7 +492,10 @@ CreateThread(function()
     end
 
     local point = GetSpawnPoint(defaultName)
-    log(('Default spawn: %s'):format(Spawn.describe(point)))
+    local version = GetResourceMetadata(RESOURCE, 'version', 0) or '?'
+
+    log(('Ready (v%s). Default spawn: %s'):format(version, Spawn.describe(point)))
+    log('Players wake up there on join. In game: /spawn to test, /spawnstatus to check.')
 
     if #overrides > 0 then
         log(('%d spawn point(s) loaded from %s.'):format(#overrides, FILE))

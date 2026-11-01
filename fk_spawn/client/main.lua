@@ -168,6 +168,47 @@ local function clearArea(point)
     ClearAreaOfPeds(point.x, point.y, point.z, 1.5, 0)
 end
 
+--- Is there a ped we can actually move yet?
+local function hasPed()
+    local ped = PlayerPedId()
+    return ped ~= 0 and DoesEntityExist(ped)
+end
+
+local function distanceTo(ped, x, y, z)
+    local coords = GetEntityCoords(ped)
+    local dx, dy, dz = coords.x - x, coords.y - y, coords.z - z
+    return math.sqrt(dx * dx + dy * dy + dz * dz)
+end
+
+--- Move the ped and keep insisting: on join the game is still finishing its own
+--- spawn and can drag the player back to the default location a moment later.
+local function placePed(point, z)
+    for _ = 1, 6 do
+        local ped = PlayerPedId()
+
+        if ped ~= 0 and DoesEntityExist(ped) then
+            if IsEntityDead(ped) then
+                NetworkResurrectLocalPlayer(point.x, point.y, z, point.w or 0.0, true, false)
+            else
+                SetEntityCoordsNoOffset(ped, point.x, point.y, z, false, false, false)
+                SetEntityHeading(ped, point.w or 0.0)
+            end
+
+            RequestCollisionAtCoord(point.x, point.y, z)
+        end
+
+        Wait(300)
+
+        ped = PlayerPedId()
+
+        if ped ~= 0 and DoesEntityExist(ped) and distanceTo(ped, point.x, point.y, z) < 12.0 then
+            return true
+        end
+    end
+
+    return false
+end
+
 -- ---------------------------------------------------------------------------
 -- The spawn itself
 -- ---------------------------------------------------------------------------
@@ -219,51 +260,72 @@ local function doSpawn(point)
         end
     end
 
+    -- Without a ped the teleport goes nowhere at all.
+    local waited = 0
+    while not hasPed() and waited < 15000 do
+        Wait(100)
+        waited = waited + 100
+    end
+
     loadInterior(point)
 
     local targetZ = point.z
-    local settled = false
-    local snapped = false
+    local placed = placePed(point, targetZ)
+
+    -- Wait for the world before measuring the floor.
     local attempts = math.max(1, math.floor((Config.Spawn.freezeTime or 2000) / 60))
 
     for _ = 1, attempts do
-        ped = PlayerPedId()
+        local current = PlayerPedId()
 
-        if IsEntityDead(ped) then
-            NetworkResurrectLocalPlayer(point.x, point.y, targetZ, point.w or 0.0, true, false)
-            Wait(100)
-            ped = PlayerPedId()
+        if current ~= 0 and DoesEntityExist(current) and HasCollisionLoadedAroundEntity(current) then
+            break
         end
 
-        SetEntityCoordsNoOffset(ped, point.x, point.y, targetZ, false, false, false)
-        SetEntityHeading(ped, point.w or 0.0)
-        RequestCollisionAtCoord(point.x, point.y, targetZ)
         Wait(60)
+    end
 
-        if HasCollisionLoadedAroundEntity(ped) then
-            settled = true
+    if Config.Spawn.groundSnap then
+        local floorZ = groundZ(point)
 
-            -- The floor is only measurable once the collision is streaming,
-            -- so the snap happens after the first successful placement.
-            if not snapped and Config.Spawn.groundSnap then
-                snapped = true
-                local floorZ = groundZ(point)
-
-                if math.abs(floorZ - targetZ) > 0.05 then
-                    targetZ = floorZ
-                    SetEntityCoordsNoOffset(ped, point.x, point.y, targetZ, false, false, false)
-                    Wait(100)
-                end
-            end
-
-            break
+        if math.abs(floorZ - targetZ) > 0.05 then
+            targetZ = floorZ
+            placePed(point, targetZ)
         end
     end
 
-    ped = PlayerPedId()
-    ClearPedTasksImmediately(ped)
-    ClearPedBloodDamage(ped)
-    SetEntityCollision(ped, true, true)
+    -- Hold the spot until the game stops fighting us: the engine's own initial
+    -- spawn can land *after* our teleport on slow joins and drag the player
+    -- back to the default location. Two clean checks in a row = we won.
+    local stable = 0
+
+    for _ = 1, 10 do
+        local current = PlayerPedId()
+        stable = 0
+
+        if current ~= 0 and DoesEntityExist(current) then
+            if distanceTo(current, point.x, point.y, targetZ) > 8.0 then
+                placePed(point, targetZ)
+            else
+                stable = stable + 1
+                if stable >= 2 then break end
+            end
+        end
+
+        Wait(300)
+    end
+
+    local finalPed = PlayerPedId()
+
+    if finalPed ~= 0 and DoesEntityExist(finalPed) then
+        ClearPedTasksImmediately(finalPed)
+        ClearPedBloodDamage(finalPed)
+        SetEntityCollision(finalPed, true, true)
+    end
+
+    if not placed and Config.Debug then
+        print('[fk_spawn] could not confirm the player at the spawn point')
+    end
 
     local cam = startIntroCamera(point)
 
@@ -278,6 +340,13 @@ local function doSpawn(point)
 
     FreezeEntityPosition(PlayerPedId(), false)
     SetPlayerControl(playerId, true, false)
+
+    if Config.Debug then
+        local current = PlayerPedId()
+        print(('[fk_spawn] placed at %.2f, %.2f, %.2f (target %.2f, %.2f, %.2f)')
+            :format(GetEntityCoords(current).x, GetEntityCoords(current).y, GetEntityCoords(current).z,
+                point.x, point.y, targetZ))
+    end
 
     TriggerServerEvent('fk_spawn:server:spawned', point.name, point.x, point.y, targetZ)
 
@@ -316,14 +385,35 @@ RegisterCommand(Config.Commands.spawnSet or 'spawnset', function(_, args)
     TriggerServerEvent('fk_spawn:server:setSpawn', name, coords.x, coords.y, coords.z, GetEntityHeading(ped))
 end, false)
 
+--- /spawnstatus — what this client believes, for quick troubleshooting.
+RegisterCommand('spawnstatus', function()
+    local ped = PlayerPedId()
+    local coords = ped ~= 0 and GetEntityCoords(ped) or { x = 0.0, y = 0.0, z = 0.0 }
+    local point = defaultName and Spawn and Spawn.resolve(spawns or {}, defaultName) or nil
+
+    print(('[fk_spawn] points=%d default=%s pending=%s spawning=%s pos=%.2f, %.2f, %.2f')
+        :format(#(spawns or {}), tostring(defaultName), tostring(pendingSpawn), tostring(spawning),
+            coords.x, coords.y, coords.z))
+
+    if point then
+        print(('[fk_spawn] default point: %s -> %.2f, %.2f, %.2f (heading %.0f)')
+            :format(point.name, point.x, point.y, point.z, point.w or 0.0))
+    end
+
+    notify(('points: %d | default: %s | see F8 console for details')
+        :format(#(spawns or {}), tostring(defaultName)))
+end, false)
+
 -- ---------------------------------------------------------------------------
 -- First join
 -- ---------------------------------------------------------------------------
 
 CreateThread(function()
+    print('[fk_spawn] client ready')
+
     -- Let the game finish loading the ped before asking for anything.
     while not NetworkIsPlayerActive(PlayerId()) do Wait(200) end
-    Wait(500)
+    Wait(Config.Spawn.joinDelay or 1200)
 
     requestSpawns()
 
@@ -346,7 +436,12 @@ CreateThread(function()
         shouldSpawn = LocalPlayer.state.fkSpawnPending == true
     end
 
-    if not shouldSpawn then return end
+    if not shouldSpawn then
+        print('[fk_spawn] no spawn pending (player was already online)')
+        return
+    end
+
+    print('[fk_spawn] spawning at ' .. tostring(defaultName or Config.DefaultSpawn))
 
     if LocalPlayer.state and LocalPlayer.state.set then
         LocalPlayer.state:set('fkSpawnPending', false, true)
