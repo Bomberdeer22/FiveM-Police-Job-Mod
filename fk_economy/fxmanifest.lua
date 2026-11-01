@@ -5,7 +5,7 @@ lua54 'yes'
 name 'fk_economy'
 author 'FiveM Police Job Mod'
 description 'Standalone cash/bank economy, on-screen money HUD, HUD customiser and staff money tools. Dependency for the police job mod.'
-version '0.1.0'
+version '0.2.0'
 
 shared_scripts {
     'config.lua',

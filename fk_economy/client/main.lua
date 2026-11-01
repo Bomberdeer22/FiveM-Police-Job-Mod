@@ -252,6 +252,15 @@ end)
 CreateThread(function()
     Wait(250)
     requestState()
+
+    -- If the server never answers (resource restarted, script error, slow join)
+    -- keep asking, so the HUD appears as soon as it can instead of staying
+    -- hidden until the player reconnects.
+    for _ = 1, 8 do
+        Wait(5000)
+        if currentState then return end
+        requestState()
+    end
 end)
 
 AddEventHandler('onResourceStop', function(resource)

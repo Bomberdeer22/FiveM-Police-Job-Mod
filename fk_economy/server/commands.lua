@@ -286,7 +286,7 @@ local function handleStaffCommand(src, args)
             return reply(src, 'Run /ecostaff claim in game, or use eco_staff add <id> in the console.')
         end
 
-        if not Config.Staff.allowClaim then
+        if not StaffClaimAllowed() then
             return reply(src, 'Claiming is disabled in config.lua. Ask the console to run eco_staff add <yourId>.',
                 { 239, 68, 68 })
         end
@@ -396,11 +396,13 @@ end, true)
 CreateThread(function()
     Wait(1500)
 
-    print(('^2[fk_economy] Ready. Staff menu key: %s | ACE: %s^0')
-        :format(Config.Keys.menu, Config.Staff.ace))
+    local version = GetResourceMetadata(GetCurrentResourceName(), 'version', 0) or '?'
+
+    print(('^2[fk_economy] Ready (v%s). Staff menu key: %s | staff list: %s^0')
+        :format(version, Config.Keys.menu, StaffRosterFile()))
 
     print(('^2[fk_economy] Staff list: %d member(s) in %s^0')
-        :format(StaffCount(), Config.Staff.file))
+        :format(StaffCount(), StaffRosterFile()))
 
     local vmenu = Config.Staff.vmenu
     if vmenu and vmenu.enabled == true then

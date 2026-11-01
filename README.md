@@ -272,14 +272,15 @@ with mocked FiveM natives, and the NUI page runs in jsdom.
 
 ```bash
 npm install
-npm test        # 132 checks
+npm test        # 137 checks
 ```
 
-* **85 server checks** — starting balances, overdraft refusal, invalid
+* **90 server checks** — starting balances, overdraft refusal, invalid
   amounts/accounts/targets, purchase pricing, per-action caps, non-staff rejection,
   player-list permissions, chat/console commands, **staff roster** (claim, add,
   remove, last-member protection, persistence across a restart, JSON shape),
-  optional vMenu detection (admin vs. moderator vs. unrelated node), audit log,
+  optional vMenu detection (admin vs. moderator vs. unrelated node), a missing
+  `server/staff.lua` degrading gracefully instead of killing the HUD, audit log,
   balance ceiling.
 * **33 UI checks** — money formatting, HUD rendering, menu/tab flow, drag mode,
   preset saving, staff selection, give/take confirmation, toasts, price list,
@@ -291,6 +292,8 @@ npm test        # 132 checks
 | Symptom | Cause / fix |
 | --- | --- |
 | **Black (or white) box behind the HUD or menu** | The page must render over the game with no background. `html, body` are forced transparent, and **`backdrop-filter` must not be used** — FiveM's CEF does not support it and paints a hard black rectangle behind the element. If you add custom CSS, avoid `backdrop-filter`, `filter` and `mix-blend-mode`. |
+| **Console: `attempt to call a nil value (global 'StaffCount')` / `'StaffRosterIsEmpty'` / `'IsStaff'`** | Your deployed copy is out of date: `server/staff.lua` is not being loaded. Re-copy the **whole** `fk_economy` folder (the file *and* `fxmanifest.lua`, which must list `server/staff.lua` before `server/main.lua`) and `restart fk_economy`. From v0.2.0 the resource prints a red `server/staff.lua was not loaded!` banner instead of crashing. |
+| **HUD never appears** | It stays hidden until the server sends balances. If the server threw an error in `PushState` the client gets nothing — check the console for the banner above. The client re-requests state every 5s for 40s, then gives up until the resource restarts. |
 | **UI changes do not appear** | NUI is cached per resource: `restart fk_economy` (or `ensure fk_economy` again) after editing `html/*`. |
 | **HUD position resets** | The layout is stored in client KVP on each player's PC, not on the server. Clearing FiveM's cache or switching PCs resets it to `Config.UI.default`. |
 | **Balances do not save** | The `fk_economy/data` folder must be writable; resources served from an archive cannot be written to. Check the server console for `[fk_economy] Failed to write…`. |

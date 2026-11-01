@@ -19,6 +19,9 @@
 local RESOURCE = GetCurrentResourceName()
 local ROSTER_FILE = Config.Staff.file or 'data/staff.json'
 
+-- Older config.lua files predate the roster, so treat a missing flag as "on".
+local ALLOW_CLAIM = Config.Staff.allowClaim ~= false
+
 local roster = {}       -- [lowercased identifier] = entry
 local rosterLoaded = false
 
@@ -185,6 +188,16 @@ end
 --- Is the roster empty (i.e. nobody has been added yet)?
 function StaffRosterIsEmpty()
     return StaffCount() == 0
+end
+
+--- May the first player claim ownership? (Config.Staff.allowClaim)
+function StaffClaimAllowed()
+    return ALLOW_CLAIM
+end
+
+--- Where the roster is persisted (Config.Staff.file)
+function StaffRosterFile()
+    return ROSTER_FILE
 end
 
 --- Copy of the roster, sorted by name.

@@ -280,7 +280,9 @@ function createHarness(options = {}) {
     }
   }
 
-  FILES.forEach((file, index) => {
+  const filesToLoad = FILES.filter((file) => !(options.skip || []).includes(file));
+
+  filesToLoad.forEach((file, index) => {
     const code = fs.readFileSync(path.join(ROOT, file), 'utf8');
     const buffer = to_luastring(code);
     const status = lauxlib.luaL_loadbuffer(L, buffer, buffer.length, to_luastring('@' + file));
@@ -647,6 +649,22 @@ check('balance never exceeds max', balance <= 999999999, balance);
 
 const stats = h.callExport('GetAccountStats', 1)[0];
 check('account stats track earned/spent', stats && stats.earned > 0 && stats.spent > 0, stats);
+
+// -- resilience: a deployment missing server/staff.lua ----------------------
+// This is what an out-of-date fxmanifest.lua looks like. The resource must keep
+// working (HUD + money) instead of crashing every state push.
+const broken = createHarness({ players, skip: ['server/staff.lua'] });
+check('missing staff module does not crash the resource', !!broken);
+
+let [brokenStaff] = broken.callExport('IsStaff', 1);
+check('staff tools fall back to "no" when the module is missing', brokenStaff === false, brokenStaff);
+
+broken.fireNet('fk_economy:server:requestState', 1);
+const brokenState = broken.captured.client.filter((e) => e.name === 'fk_economy:client:state').pop();
+check('HUD state still pushed without the staff module', !!brokenState && brokenState.args[0].balances.cash === 750, brokenState && brokenState.args[0]);
+
+const guardLog = broken.captured.logs.join('\n');
+check('missing staff module is reported loudly', /server\/staff\.lua was not loaded/.test(guardLog), guardLog.split('\n').slice(0, 4));
 
 console.log(`\n${pass}/${pass + failures.length} checks passed`);
 if (failures.length) {

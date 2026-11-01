@@ -23,6 +23,34 @@
 local RESOURCE = GetCurrentResourceName()
 
 -- ---------------------------------------------------------------------------
+-- Guard: server/staff.lua must be loaded before this file.
+-- A stale fxmanifest.lua (or a folder copied without staff.lua) would otherwise
+-- crash every state push, which looks like "the HUD never appears".
+-- ---------------------------------------------------------------------------
+if type(IsStaff) ~= 'function' then
+    print('^1==============================================================^0')
+    print('^1[fk_economy] server/staff.lua was not loaded!^0')
+    print('^1[fk_economy] Check that fxmanifest.lua lists server/staff.lua BEFORE^0')
+    print('^1[fk_economy] server/main.lua, and that the file exists.^0')
+    print('^1[fk_economy] Staff tools are disabled until this is fixed.^0')
+    print('^1==============================================================^0')
+
+    -- Minimal no-op fallbacks so the HUD and money API keep working.
+    function CheckStaff() return false, nil, nil end
+    function IsStaff() return false end
+    function StaffCount() return 0 end
+    function StaffRosterIsEmpty() return true end
+    function StaffList() return {} end
+    function StaffIsRegistered() return false end
+    function StaffRegister() return false, 'staff_module_missing' end
+    function StaffUnregister() return false, 'staff_module_missing' end
+    function StaffPrimaryIdentifier() return nil end
+    function StaffVMenuPermissions() return {} end
+    function StaffClaimAllowed() return false end
+    function StaffRosterFile() return Config.Staff.file or 'data/staff.json' end
+end
+
+-- ---------------------------------------------------------------------------
 -- Player helpers
 -- ---------------------------------------------------------------------------
 
@@ -497,7 +525,7 @@ CreateThread(function()
 
     if StaffRosterIsEmpty() then
         print('^3[fk_economy] The staff list is empty.^0')
-        if Config.Staff.allowClaim then
+        if StaffClaimAllowed() then
             print('^3[fk_economy]   In game: /ecostaff claim  (works once, while the list is empty)^0')
         end
         print('^3[fk_economy]   Or from the server console: eco_staff add <yourServerId>^0')
