@@ -1,0 +1,14 @@
+# Runtime economy data (created by the server, do not commit player balances)
+fk_economy/data/accounts.json
+fk_economy/data/transactions.log
+fk_economy/data/*.tmp
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Test tooling
+node_modules/
+package-lock.json

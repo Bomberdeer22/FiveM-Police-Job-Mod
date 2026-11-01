@@ -1,0 +1,14 @@
+{
+  "name": "fivem-police-job-mod",
+  "version": "0.1.0",
+  "private": true,
+  "description": "FiveM police job mod — economy dependency (fk_economy) plus dev tooling",
+  "scripts": {
+    "test": "node tests/lua-money.test.js && node tests/nui.test.js && node tests/preview.test.js",
+    "preview": "python3 -m http.server 8000"
+  },
+  "devDependencies": {
+    "fengari": "^0.1.4",
+    "jsdom": "^24.0.0"
+  }
+}
