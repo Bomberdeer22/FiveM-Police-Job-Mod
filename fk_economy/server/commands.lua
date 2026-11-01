@@ -92,6 +92,45 @@ RegisterCommand('addmoney', function(src, args) moneyCommand(src, args, 'add', '
 RegisterCommand('takemoney', function(src, args) moneyCommand(src, args, 'remove', 'takemoney') end, false)
 RegisterCommand('setmoney', function(src, args) moneyCommand(src, args, 'set', 'setmoney') end, false)
 
+--- Explain the player's staff access. Useful when someone cannot see the
+--- staff tab and you need to know whether vMenu (or the ACE) is the problem.
+local function describeAccess(src)
+    local allowed, source, matched = CheckStaff(src)
+
+    if allowed then
+        if source == 'vmenu' then
+            return true, ('YES — vMenu admin (%s)'):format(matched)
+        elseif source == 'ace' then
+            return true, ('YES — %s permission'):format(matched)
+        elseif source == 'identifier' then
+            return true, ('YES — identifier allowlist (%s)'):format(matched)
+        end
+        return true, 'YES — console'
+    end
+
+    return false, ('NO — no %s permission and no vMenu admin permission was found.')
+        :format(Config.Staff.ace)
+end
+
+RegisterCommand('ecoaccess', function(src)
+    src = tonumber(src) or 0
+    local allowed, description = describeAccess(src)
+    reply(src, ('Staff access: %s'):format(description),
+        allowed and { 52, 211, 153 } or { 239, 68, 68 })
+end, false)
+
+RegisterCommand('eco_check', function(src, args)
+    if src ~= 0 then return deny(src, 'eco_check') end
+    local target = tonumber(args[1])
+    if not target or not GetPlayerName(target) then
+        return reply(src, 'Usage: eco_check <playerId> (player must be online)')
+    end
+
+    local allowed, description = describeAccess(target)
+    reply(src, ('%s (%d) — staff access: %s'):format(GetPlayerName(target), target, description),
+        allowed and { 52, 211, 153 } or { 239, 68, 68 })
+end, true)
+
 RegisterCommand('mymoney', function(src)
     if src == 0 then
         return reply(src, 'This command is for players. Use /addmoney from the console.')
@@ -123,6 +162,18 @@ end, true)
 
 CreateThread(function()
     Wait(1500)
-    print('^2[fk_economy] Ready. Staff menu key: ' .. Config.Keys.menu ..
-        ' | ACE: ' .. Config.Staff.ace .. '^0')
+
+    print(('^2[fk_economy] Ready. Staff menu key: %s | ACE: %s^0')
+        :format(Config.Keys.menu, Config.Staff.ace))
+
+    local vmenu = Config.Staff.vmenu
+    if vmenu and vmenu.enabled ~= false then
+        local installed = type(GetResourceState) == 'function'
+            and GetResourceState('vMenu') ~= 'missing'
+
+        print(('^2[fk_economy] vMenu admin detection: ON (%d permission node(s))%s^0')
+            :format(#VMENU_PERMISSIONS, installed and ' — vMenu is running.' or ' — vMenu not detected, checks are skipped automatically.'))
+    else
+        print('^3[fk_economy] vMenu admin detection: OFF^0')
+    end
 end)

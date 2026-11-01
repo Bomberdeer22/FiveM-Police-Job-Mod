@@ -324,6 +324,11 @@ const players = [
   { id: 1, name: 'Alice', identifiers: ['license:aaa', 'steam:1'], aces: [] },
   { id: 2, name: 'Bob', identifiers: ['license:bbb'], aces: [] },
   { id: 3, name: 'Admin', identifiers: ['license:admin'], aces: ['fk_economy.staff'] },
+  // vMenu admins: vMenu stores staff status as ACE permissions
+  { id: 4, name: 'Vicky', identifiers: ['license:vicky'], aces: ['vMenu.Everything'] },
+  { id: 5, name: 'Mod', identifiers: ['license:mod'], aces: ['vMenu.OnlinePlayers.Kick', 'vMenu.OnlinePlayers.TempBan'] },
+  { id: 6, name: 'Driver', identifiers: ['license:driver'], aces: ['vMenu.VehicleSpawner.Menu', 'vMenu.OnlinePlayers.Menu'] },
+  { id: 7, name: 'Banhammer', identifiers: ['license:ban'], aces: ['vMenu.OnlinePlayers.PermBan'] },
 ];
 
 const h = createHarness({ players });
@@ -451,13 +456,50 @@ check('non-staff cannot list players', !h.captured.client.some((e) => e.name ===
 h.captured.client.length = 0;
 h.fireNet('fk_economy:server:requestPlayers', 3);
 const listEvent = h.captured.client.filter((e) => e.name === 'fk_economy:client:playerList').pop();
-check('staff can list players', listEvent && Array.isArray(listEvent.args[0]) && listEvent.args[0].length === 3, listEvent && listEvent.args[0]);
+check('staff can list players', listEvent && Array.isArray(listEvent.args[0]) && listEvent.args[0].length === 7, listEvent && listEvent.args[0]);
 check('player list includes balances', listEvent && listEvent.args[0][0].balances && typeof listEvent.args[0][0].balances.cash === 'number');
 
 let [isStaffFlag] = h.callExport('IsStaff', 3);
 check('IsStaff export true for admin', isStaffFlag === true, isStaffFlag);
 [isStaffFlag] = h.callExport('IsStaff', 1);
 check('IsStaff export false for normal player', isStaffFlag === false, isStaffFlag);
+
+// -- vMenu admin detection --------------------------------------------------
+let [vmenuAccess] = h.callExport('GetStaffAccess', 4);
+check('vMenu.Everything is detected as admin', vmenuAccess && vmenuAccess.staff === true && vmenuAccess.source === 'vmenu', vmenuAccess);
+check('matched vMenu node reported', vmenuAccess && vmenuAccess.matched === 'vMenu.Everything', vmenuAccess && vmenuAccess.matched);
+
+[vmenuAccess] = h.callExport('GetStaffAccess', 7);
+check('vMenu.OnlinePlayers.PermBan counts as admin', vmenuAccess && vmenuAccess.staff === true && vmenuAccess.source === 'vmenu', vmenuAccess);
+
+[vmenuAccess] = h.callExport('GetStaffAccess', 3);
+check('own ACE still takes priority', vmenuAccess && vmenuAccess.staff === true && vmenuAccess.source === 'ace', vmenuAccess);
+
+let [modIsStaff] = h.callExport('IsStaff', 5);
+check('vMenu moderators are not staff by default', modIsStaff === false, modIsStaff);
+[modIsStaff] = h.callExport('IsStaff', 6);
+check('plain vMenu permissions are not staff', modIsStaff === false, modIsStaff);
+
+let [vmenuNodes] = h.callExport('GetVMenuPermissions');
+check('vMenu node list exposed', Array.isArray(vmenuNodes) && vmenuNodes.includes('vMenu.Everything'), vmenuNodes);
+
+// A vMenu admin can actually use the staff tools
+h.captured.client.length = 0;
+h.fireNet('fk_economy:server:staffAction', 4, { mode: 'add', account: 'bank', amount: 250, target: 2, reason: 'Bonus' });
+staffResult = h.captured.client.filter((e) => e.name === 'fk_economy:client:staffResult').pop();
+check('vMenu admin can give money via menu', staffResult && staffResult.args[0].ok === true, staffResult && staffResult.args[0]);
+[balance] = h.callExport('GetBalance', 2, 'bank');
+check('vMenu admin action applied', balance === 5250, balance);
+
+h.captured.client.length = 0;
+h.fireNet('fk_economy:server:staffAction', 5, { mode: 'add', account: 'bank', amount: 250, target: 2 });
+staffResult = h.captured.client.filter((e) => e.name === 'fk_economy:client:staffResult').pop();
+check('vMenu moderator cannot give money', staffResult && staffResult.args[0].ok === false, staffResult && staffResult.args[0]);
+
+h.captured.client.length = 0;
+h.runCommand('addmoney', 4, ['2', 'cash', '50', 'vMenu test']);
+[balance] = h.callExport('GetBalance', 2, 'cash');
+check('vMenu admin can use chat commands', balance === 800, balance);
 
 // -- commands --------------------------------------------------------------
 h.captured.client.length = 0;
@@ -474,7 +516,18 @@ check('staff command adds money', balance === 5250, balance);
 
 h.runCommand('takemoney', 3, ['2', 'bank', '1000']);
 [balance] = h.callExport('GetBalance', 2, 'bank');
-check('staff command removes money', balance === 4000, balance);
+check('staff command removes money', balance === 4250, balance);
+
+// /ecoaccess explains the decision (handy when debugging vMenu setups)
+h.captured.client.length = 0;
+h.runCommand('ecoaccess', 4, []);
+let accessMsg = h.captured.client.filter((e) => e.name === 'chat:addMessage' && e.target === 4).pop();
+check('/ecoaccess reports vMenu admin', accessMsg && /vMenu admin/i.test(accessMsg.args[0].args[1]), accessMsg && accessMsg.args[0].args[1]);
+
+h.captured.client.length = 0;
+h.runCommand('ecoaccess', 6, []);
+accessMsg = h.captured.client.filter((e) => e.name === 'chat:addMessage' && e.target === 6).pop();
+check('/ecoaccess reports no access', accessMsg && /NO/.test(accessMsg.args[0].args[1]), accessMsg && accessMsg.args[0].args[1]);
 
 // -- persistence -----------------------------------------------------------
 h.fireServerEvent('playerDropped', '1');
@@ -494,7 +547,7 @@ check('balance survives restart', reloaded && reloaded.args[0].balances.cash ===
 
 // Offline identifier access (staff tooling / other resources)
 let [offline] = h2.callExport('GetMoney', 2);
-check('online lookup still works after reload', offline && offline.bank === 4000, offline);
+check('online lookup still works after reload', offline && offline.bank === 4250, offline);
 
 // -- misc ------------------------------------------------------------------
 const [, errBalance] = h.callExport('AddMoney', 1, 'cash', 100000000, 'Cap test');

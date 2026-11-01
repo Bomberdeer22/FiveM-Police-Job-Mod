@@ -27,6 +27,31 @@ for _, id in ipairs(Config.Staff.identifiers or {}) do
     STAFF_IDENTIFIERS[string.lower(id)] = true
 end
 
+-- vMenu grants its staff their powers through ACE permissions, so "is this
+-- person a vMenu admin?" is answered with IsPlayerAceAllowed on vMenu's own
+-- permission nodes (see Config.Staff.vmenu).
+local VMENU_PERMISSIONS = {}
+do
+    local vmenu = Config.Staff.vmenu
+    if vmenu and vmenu.enabled ~= false then
+        local seen = {}
+        local function add(list)
+            for _, node in ipairs(list or {}) do
+                if type(node) == 'string' and node ~= '' and not seen[node] then
+                    seen[node] = true
+                    VMENU_PERMISSIONS[#VMENU_PERMISSIONS + 1] = node
+                end
+            end
+        end
+
+        add(vmenu.permissions)
+        if vmenu.includeModerators then
+            add(vmenu.moderatorPermissions)
+        end
+        add(vmenu.extraPermissions)
+    end
+end
+
 -- ---------------------------------------------------------------------------
 -- Player helpers
 -- ---------------------------------------------------------------------------
@@ -92,25 +117,44 @@ end
 -- State sync
 -- ---------------------------------------------------------------------------
 
+--- Work out whether a player may use the staff tools, and *why*.
+--- Checks, in order: the economy ACE, the identifier allowlist, then vMenu.
+--- @param src number|nil
+--- @return boolean isStaff
+--- @return string|nil source   'console' | 'ace' | 'identifier' | 'vmenu'
+--- @return string|nil matched  the permission node / identifier that matched
+function CheckStaff(src)
+    if not src or src < 1 then
+        return Config.Staff.allowConsole == true, 'console', nil
+    end
+
+    -- 1. fk_economy's own permission
+    if IsPlayerAceAllowed(src, Config.Staff.ace) then
+        return true, 'ace', Config.Staff.ace
+    end
+
+    -- 2. Hard-coded identifier allowlist (config.lua)
+    for _, id in ipairs(GetPlayerIdentifiers(src) or {}) do
+        if STAFF_IDENTIFIERS[string.lower(id)] then
+            return true, 'identifier', id
+        end
+    end
+
+    -- 3. vMenu admins: their staff status is stored as ACE permissions
+    for _, node in ipairs(VMENU_PERMISSIONS) do
+        if IsPlayerAceAllowed(src, node) then
+            return true, 'vmenu', node
+        end
+    end
+
+    return false, nil, nil
+end
+
 --- Is this player allowed to use the staff tools?
 --- @param src number
 --- @return boolean
 function IsStaff(src)
-    if not src or src < 1 then
-        return Config.Staff.allowConsole == true
-    end
-
-    if IsPlayerAceAllowed(src, Config.Staff.ace) then
-        return true
-    end
-
-    for _, id in ipairs(GetPlayerIdentifiers(src) or {}) do
-        if STAFF_IDENTIFIERS[string.lower(id)] then
-            return true
-        end
-    end
-
-    return false
+    return CheckStaff(src) == true
 end
 
 --- Push the current balances to a player's HUD/menu.
@@ -320,6 +364,17 @@ exports('GetAccounts', function()
 end)
 exports('IsStaff', function(src)
     return IsStaff(src)
+end)
+exports('GetStaffAccess', function(src)
+    local allowed, source, matched = CheckStaff(src)
+    return {
+        staff   = allowed,
+        source  = source,
+        matched = matched,
+    }
+end)
+exports('GetVMenuPermissions', function()
+    return VMENU_PERMISSIONS
 end)
 exports('GetAccountStats', function(src)
     local acc = GetPlayerAccount(src)

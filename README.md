@@ -23,7 +23,7 @@ staff money tools. No framework, no database, no other resources required.
 | --- | --- |
 | **Money HUD** | Glassy card showing **Cash** and **Bank**, animated count-up/down, green/red flash and `+$500` float text on every change. |
 | **HUD customiser** | Press **F7** → *HUD Layout*: hit **Start dragging** and the menu slides away so you can drop the HUD anywhere with the mouse. Also corner presets, arrow-key nudging, scale, opacity and compact mode. Saved per player on their own PC. |
-| **Staff panel** | Staff can select any online player and **give** or **take** cash/bank from the menu. Take asks for confirmation. Works for themselves too. |
+| **Staff panel** | Staff can select any online player and **give** or **take** cash/bank from the menu. Take asks for confirmation. Works for themselves too. Staff = `fk_economy.staff` ACE, identifier allowlist, **or a vMenu admin**. |
 | **Price list** | Every item price lives in `config.lua` and is browsable in the menu's *Price List* tab. The main police mod will read these prices when buying items/vehicles/services. |
 | **API for the main mod** | Server exports (`AddMoney`, `RemoveMoney`, `TryPurchase`, `GetPrice`, …) so the police mod never has to touch balances directly. |
 | **Persistence** | Balances are stored in `fk_economy/data/accounts.json`, keyed by `license:` identifier, auto-saved and flushed on disconnect/shutdown. |
@@ -45,7 +45,12 @@ staff money tools. No framework, no database, no other resources required.
    ensure fk_economy
    ```
 
-3. Give your staff the permission (recommended, ACE based):
+3. Give your staff the permission. **If you already run vMenu, this is automatic** — anyone
+   vMenu treats as an admin (e.g. `vMenu.Everything`, `vMenu.OnlinePlayers.PermBan`, or
+   `vMenu.OnlinePlayers.All`) is given the staff panel with no extra setup. See
+   [Staff detection](#staff-detection) below.
+
+   Otherwise use the economy's own ACE:
 
    ```cfg
    add_ace group.admin fk_economy.staff allow
@@ -73,6 +78,50 @@ staff money tools. No framework, no database, no other resources required.
 
 Players can rebind it in *Settings → Key Bindings → FiveM → "Open Economy Menu / HUD Customiser"*.
 
+### Staff detection
+
+A player counts as staff if **any** of these is true (checked in this order):
+
+| # | Source | How |
+| --- | --- | --- |
+| 1 | Economy ACE | `add_ace <group\|identifier> fk_economy.staff allow` |
+| 2 | Identifier allowlist | `Config.Staff.identifiers = { 'license:…' }` |
+| 3 | **vMenu admin** | The player is allowed any node in `Config.Staff.vmenu.permissions` |
+
+vMenu stores its staff status in ACE permissions, so this is a straight
+`IsPlayerAceAllowed` check on vMenu's own nodes — no exports or events needed, and
+nothing to configure if vMenu is already set up. Default nodes:
+
+```lua
+'vMenu.Everything',                 -- full menu access
+'vMenu.OnlinePlayers.All',          -- every online-player action
+'vMenu.OnlinePlayers.PermBan',      -- permanent bans
+'vMenu.OnlinePlayers.Unban',        -- lift bans
+'vMenu.OnlinePlayers.Identifiers',  -- view player identifiers
+'vMenu.Staff',                      -- staff-only menu flag
+```
+
+Tuning in `config.lua`:
+
+```lua
+Config.Staff.vmenu = {
+    enabled = true,
+    includeModerators = false,   -- true also accepts Kick / TempBan / Summon / ViewBannedPlayers
+    extraPermissions = { 'group.dreamstaff' }, -- your own nodes
+}
+```
+
+Notes:
+
+* Requires vMenu to be permission-driven (`vmenu_use_permissions true`, the default).
+  With `vmenu_use_permissions false` vMenu has no ACEs to read, so use the economy
+  ACE or the identifier list instead.
+* vMenu admins are logged in the audit file exactly like any other staff member, with
+  their name and server id.
+* If vMenu is not installed the checks simply return false — nothing breaks.
+* Check what a player resolves to with `/ecoaccess` (yourself) or
+  `eco_check <id>` in the server console.
+
 ### Commands
 
 Chat (staff only — validated server-side):
@@ -82,6 +131,7 @@ Chat (staff only — validated server-side):
 /takemoney <id> <cash|bank> <amount> [reason]
 /setmoney <id> <cash|bank> <amount> [reason]
 /mymoney
+/ecoaccess                    why do I (not) have staff access?
 ```
 
 Console / rcon:
@@ -90,6 +140,7 @@ Console / rcon:
 eco_save                      flush accounts.json now
 eco_count                     how many accounts are stored
 eco_give <id> <acct> <amount> [reason]
+eco_check <id>                staff access for a player, and where it came from
 ```
 
 ### Configuration
@@ -103,7 +154,7 @@ Everything lives in [`fk_economy/config.lua`](fk_economy/config.lua):
 | `Config.Accounts` | Which accounts exist (`cash`, `bank`) |
 | `Config.UI` | Default HUD position/scale/opacity, accent colour, animations, edge snapping |
 | `Config.Keys` | Menu key |
-| `Config.Staff` | ACE permission, identifier allowlist, per-action cap, quick amounts, reasons, logging |
+| `Config.Staff` | ACE permission, identifier allowlist, **vMenu admin detection**, per-action cap, quick amounts, reasons, logging |
 | `Config.Limits` | Max balance, minimum amount, whole numbers |
 | `Config.Persistence` | Data file paths, save interval, log size |
 | `Config.Items` | **Item price list** — the main mod reads this |
@@ -200,13 +251,14 @@ with mocked FiveM natives, and the NUI page runs in jsdom.
 
 ```bash
 npm install
-npm test        # 102 checks
+npm test        # 115 checks
 ```
 
-* **55 server checks** — starting balances, overdraft refusal, invalid
+* **68 server checks** — starting balances, overdraft refusal, invalid
   amounts/accounts/targets, purchase pricing, per-action caps, non-staff rejection,
-  player-list permissions, chat commands, JSON persistence across a restart, audit
-  log, balance ceiling.
+  player-list permissions, chat commands, **vMenu admin detection** (admin vs.
+  moderator vs. unrelated vMenu node), JSON persistence across a restart, audit log,
+  balance ceiling.
 * **33 UI checks** — money formatting, HUD rendering, menu/tab flow, drag mode,
   preset saving, staff selection, give/take confirmation, toasts, price list,
   delta pills, hidden-HUD behaviour.
@@ -220,7 +272,7 @@ npm test        # 102 checks
 | **UI changes do not appear** | NUI is cached per resource: `restart fk_economy` (or `ensure fk_economy` again) after editing `html/*`. |
 | **HUD position resets** | The layout is stored in client KVP on each player's PC, not on the server. Clearing FiveM's cache or switching PCs resets it to `Config.UI.default`. |
 | **Balances do not save** | The `fk_economy/data` folder must be writable; resources served from an archive cannot be written to. Check the server console for `[fk_economy] Failed to write…`. |
-| **Staff tab missing** | The player is missing the ACE permission. `add_ace group.admin fk_economy.staff allow` + `add_principal identifier.license:… group.admin`, then reconnect. |
+| **Staff tab missing** | Run `/ecoaccess` in game (or `eco_check &lt;id&gt;` in the console) — it prints whether access was granted and by what. Grant either `fk_economy.staff`, an identifier in `Config.Staff.identifiers`, or a vMenu admin node. If you run vMenu with `vmenu_use_permissions false`, its ACEs do not exist, so use the economy ACE instead. |
 | **`/mymoney` says no account** | The account is created on first join; if you added the resource while players were online, they reconnect (or the server restarts). |
 
 ## Roadmap

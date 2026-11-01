@@ -132,6 +132,46 @@ Config.Staff = {
 
     -- Write every staff money change + purchase to data/transactions.log
     logTransactions = true,
+
+    -- -----------------------------------------------------------------------
+    -- vMenu integration
+    -- vMenu decides who is staff with ACE permissions, so we simply check the
+    -- same permission nodes. Anyone allowed ANY of the permissions below is
+    -- treated as economy staff (full access to the staff panel + commands).
+    --
+    -- Requires vMenu to be permission-driven (vmenu_use_permissions true, the
+    -- default). Nothing breaks if vMenu is not installed — the checks just
+    -- return false.
+    -- -----------------------------------------------------------------------
+    vmenu = {
+        enabled = true,
+
+        -- Admin-level vMenu permissions. Being allowed any one of these counts.
+        permissions = {
+            'vMenu.Everything',                  -- full menu access
+            'vMenu.OnlinePlayers.All',           -- every online-player action
+            'vMenu.OnlinePlayers.PermBan',       -- permanent bans
+            'vMenu.OnlinePlayers.Unban',         -- lift bans
+            'vMenu.OnlinePlayers.Identifiers',   -- view player identifiers
+            'vMenu.Staff',                       -- staff-only menu flag
+        },
+
+        -- Also treat vMenu moderators (kick / tempban / summon) as staff?
+        -- false = only admins get money tools. Set true on servers where
+        -- moderators are trusted with balances.
+        includeModerators = false,
+
+        moderatorPermissions = {
+            'vMenu.OnlinePlayers.TempBan',
+            'vMenu.OnlinePlayers.Kick',
+            'vMenu.OnlinePlayers.Summon',
+            'vMenu.OnlinePlayers.ViewBannedPlayers',
+        },
+
+        -- Any extra permission nodes you want to accept, e.g. a custom group
+        -- node you already use for staff: { 'group.dreamstaff' }
+        extraPermissions = {},
+    },
 }
 
 -- ---------------------------------------------------------------------------

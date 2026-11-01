@@ -95,6 +95,20 @@ The menu is bound to `economyMenu` (F7 by default). If the police mod's own menu
 should take precedence, either change `Config.Keys.menu` or call
 `exports.fk_economy:OpenMenu()` from your own keybind instead.
 
+## Checking staff from another resource
+
+```lua
+local isStaff = exports.fk_economy:IsStaff(src)   -- economy ACE, identifier list, or vMenu admin
+
+-- or the detailed answer, useful for UI/debug output:
+local access = exports.fk_economy:GetStaffAccess(src)
+-- { staff = true, source = 'vmenu', matched = 'vMenu.Everything' }
+-- source is 'ace' | 'identifier' | 'vmenu' | 'console' | nil
+```
+
+If your police mod needs its own staff-only actions (e.g. a "duty supervisor"
+menu), reuse this so one permission model covers the whole mod.
+
 ## Data model
 
 ```jsonc
