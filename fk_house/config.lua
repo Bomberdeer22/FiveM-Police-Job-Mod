@@ -1,0 +1,145 @@
+--[[
+    fk_house — config.lua
+    ---------------------------------------------------------------------------
+    Everything you can do inside Michael De Santa's mansion.
+
+    Spots are interaction points: walk up, press E, pick an option. The
+    coordinates below are a starting point — stand exactly where you want a
+    prompt, look at the prop and run /housespot <name> (staff) to save it.
+    /housemarkers draws a marker on every spot so you can see where they are.
+]]
+
+Config = {}
+
+Config.Debug = false
+
+-- ---------------------------------------------------------------------------
+-- Where the house is (interactions only work inside this radius)
+-- ---------------------------------------------------------------------------
+Config.House = {
+    label = "Michael's house",
+    coords = { x = -802.311, y = 175.056, z = 72.8446 },
+    radius = 45.0,
+}
+
+Config.Keys = {
+    interact = 38, -- E
+    cancel = { 200, 202, 322 }, -- ESC / back
+}
+
+-- ---------------------------------------------------------------------------
+-- Interaction spots
+-- ---------------------------------------------------------------------------
+-- type decides what the spot does:
+--   'wardrobe'  -> save/wear personal outfits
+--   'kitchen'   -> food & drink (menu below)
+--   'shower'    -> clean up + heal
+--   'bed'       -> sleep / nap, advances the clock
+--   'sofa'      -> relax, slow health regen
+Config.Spots = {
+    {
+        name = 'wardrobe',
+        label = 'Wardrobe',
+        type = 'wardrobe',
+        coords = { x = -811.30, y = 176.20, z = 76.74 },
+        radius = 2.2,
+    },
+    {
+        name = 'bed',
+        label = 'Bed',
+        type = 'bed',
+        coords = { x = -812.56, y = 174.85, z = 76.74 },
+        radius = 2.2,
+        -- hours advanced by each option and the health given back
+        sleep = { hours = 8, health = 100, label = 'Sleep until morning' },
+        nap = { hours = 2, health = 40, label = 'Take a nap' },
+    },
+    {
+        name = 'shower',
+        label = 'Shower',
+        type = 'shower',
+        coords = { x = -804.95, y = 171.90, z = 76.89 },
+        radius = 2.0,
+        duration = 5000,
+        health = 100,
+    },
+    {
+        name = 'kitchen',
+        label = 'Kitchen',
+        type = 'kitchen',
+        coords = { x = -802.31, y = 175.06, z = 72.84 },
+        radius = 2.4,
+        options = {
+            { id = 'snack', label = 'Make a sandwich', health = 20, description = 'Free. From the fridge.' },
+            { id = 'coffee', label = 'Brew a coffee', item = 'coffee', health = 10, description = 'Keeps you awake.' },
+            { id = 'donut', label = 'Grab a donut', item = 'donut', health = 15, description = 'Tradition.' },
+            { id = 'water', label = 'Pour a water', item = 'water', health = 8, description = 'Hydration.' },
+        },
+    },
+    {
+        name = 'livingroom',
+        label = 'Living room',
+        type = 'sofa',
+        coords = { x = -805.00, y = 177.50, z = 72.84 },
+        radius = 2.4,
+        scenario = 'WORLD_HUMAN_SEAT_BENCH',
+        regen = { health = 100, seconds = 30 },
+    },
+}
+
+-- ---------------------------------------------------------------------------
+-- Wardrobe
+-- ---------------------------------------------------------------------------
+Config.Wardrobe = {
+    slots = 3,          -- personal outfit slots per player
+    saveDelay = 1000,   -- ms of "getting changed" before the screen reveals it
+    fade = 400,
+}
+
+-- ---------------------------------------------------------------------------
+-- Food / drink
+-- ---------------------------------------------------------------------------
+Config.Food = {
+    -- Played while eating. Any valid animation dictionary works.
+    animation = { dict = 'mp_player_inteat@burger', clip = 'mp_player_int_eat_burger' },
+    duration = 3000,
+    -- Charged through fk_economy when it is running and the option has `item`.
+    chargeItems = true,
+}
+
+-- ---------------------------------------------------------------------------
+-- Sleeping
+-- ---------------------------------------------------------------------------
+Config.Sleep = {
+    fade = 1000,
+    -- Local clock is overridden for the player. If your server has a
+    -- time-sync resource, set this event to let the server advance it instead:
+    -- TriggerEvent('yourTimeSync:addHours', hours)
+    timeAdvanceEvent = nil,
+    wakeMessage = 'You wake up feeling rested.',
+}
+
+-- ---------------------------------------------------------------------------
+-- Staff (same list as the economy: /ecostaff)
+-- ---------------------------------------------------------------------------
+Config.Staff = {
+    useEconomy = true,
+    ace = 'fk_house.staff',
+}
+
+-- ---------------------------------------------------------------------------
+-- Persistence
+-- ---------------------------------------------------------------------------
+Config.Persistence = {
+    outfitsFile = 'data/outfits.json',
+    spotsFile = 'data/spots.json',
+}
+
+-- ---------------------------------------------------------------------------
+-- UI
+-- ---------------------------------------------------------------------------
+Config.UI = {
+    title = "Michael's house",
+    footer = 'Press the number to choose · ESC to close',
+    showHelp = true,
+}

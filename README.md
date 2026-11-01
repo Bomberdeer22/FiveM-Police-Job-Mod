@@ -3,11 +3,13 @@
 A police job mod for FiveM (GTA V / GTA V Enhanced), in the spirit of LSPDFR Advanced.
 
 **Current status:** the economic foundation — everything the main mod will later need to
-move money around — plus the spawn manager are built and tested.
+move money around — the spawn manager, and Michael's house as a place you can actually
+live in are built and tested.
 
 ```
 fk_economy/          <- the economy resource (the money dependency)
 fk_spawn/            <- spawn manager: players wake up in Michael's bedroom
+fk_house/            <- Michael's mansion: wardrobe, kitchen, shower, bed, living room
 preview/             <- dev-only browser preview of the UI (not shipped to the server)
 ```
 
@@ -350,6 +352,78 @@ needs no restart. `/spawn_reset michael_bedroom` from the console undoes it.
 
 ---
 
+## fk_house
+
+Makes Michael De Santa's mansion a place you can actually use. Walk up to something,
+press **E**, pick from the card that appears.
+
+| Where | What you can do |
+| --- | --- |
+| **Wardrobe** | Three personal outfit slots, saved per licence. Save the look you're wearing, wear it again later, or **put your own clothes back on** — it captures your real ped components, so nothing is hard-coded and nothing breaks with custom clothing. |
+| **Kitchen** | Make a sandwich (free, +20 health), brew a coffee, grab a donut or pour a water. Paid items are charged through `fk_economy` at the prices in its `Config.Items`, so the money side stays in one place. Eating plays the burger animation. |
+| **Shower** | Clean the blood off and heal to full. "Wash your hands" is the quick version. |
+| **Bed** | Sleep 8 hours or take a 2 hour nap: the screen fades, the clock moves forward and you wake up healed. |
+| **Living room** | Relax on the sofa — slow health regen while you sit. |
+
+### Install
+
+```cfg
+ensure fk_economy
+ensure fk_spawn
+ensure fk_house
+```
+
+`fk_house` uses the economy for food prices and for the staff list (`/ecostaff`), and
+works on its own if `fk_economy` is not running (food is free then).
+
+### Moving the spots
+
+The coordinates in `config.lua` are a starting point. To place a spot exactly where you
+want it (in front of the wardrobe, at the fridge, by the bed):
+
+1. Stand where the player should stand and look at the prop.
+2. `/housespot wardrobe` (staff only — owners are staff via `/ecostaff claim`).
+3. `/housemarkers` to draw a marker and the spot name on every spot, so you can see
+   what is where. `/housespots` lists them all with the saved ones marked `*`.
+
+Everything saved this way goes to `fk_house/data/spots.json` and survives restarts.
+Console equivalents: `house_spot <name> <x> <y> <z>` and `house_reset <name>`.
+
+| Spot name | Type | Default |
+| --- | --- | --- |
+| `wardrobe` | wardrobe | Michael's bedroom |
+| `bed` | bed | Michael's bedroom |
+| `shower` | shower | upstairs bathroom |
+| `kitchen` | kitchen | ground floor |
+| `livingroom` | sofa | ground floor |
+
+### Configuration
+
+| Key | Default | What it does |
+| --- | --- | --- |
+| `Config.Spots` | 5 spots | What exists in the house: `name`, `label`, `type`, `coords`, `radius` |
+| `Config.House` | mansion centre, 45 m | Interactions only work inside this radius |
+| `Config.Keys.interact` | `38` (E) | Interaction key |
+| `Config.Wardrobe.slots` | `3` | Outfit slots per player |
+| `Config.Food.chargeItems` | `true` | Charge kitchen items through the economy |
+| `Config.Food.animation` | burger | Animation played while eating |
+| `Config.Sleep.timeAdvanceEvent` | `nil` | Set to your time-sync event to advance server time instead of the local clock |
+| `Config.Sleep.wakeMessage` | – | Chat line when you wake up |
+| `Config.UI` | – | Card footer text and whether the `[E]` prompt shows |
+
+Adding your own spot: copy an entry in `Config.Spots`, give it a `name`, a `type`
+(`wardrobe`, `kitchen`, `shower`, `bed`, `sofa`) and coordinates, then `/housespot <name>`
+in game to fine-tune it.
+
+### Data files
+
+| File | Purpose |
+| --- | --- |
+| `fk_house/data/spots.json` | Positions saved with `/housespot` (git-ignored) |
+| `fk_house/data/outfits.json` | Every player's saved outfits, keyed by `license:` (git-ignored) |
+
+---
+
 ## Preview the UI in a browser (dev only)
 
 `preview/` runs the real NUI page against a mock bridge, so you can look at the HUD,
@@ -373,7 +447,7 @@ with mocked FiveM natives, and the NUI page runs in jsdom.
 
 ```bash
 npm install
-npm test        # 183 checks
+npm test        # 234 checks
 ```
 
 * **90 server checks** — starting balances, overdraft refusal, invalid
@@ -387,6 +461,11 @@ npm test        # 183 checks
   preset saving, staff selection, give/take confirmation, toasts, price list,
   delta pills, hidden-HUD behaviour.
 * **14 preview checks** — the `preview/` harness boots and drives the same UI.
+* **51 house checks** — the five spots and their types, 3D distance and nearest-spot
+  lookup, spot validation, `/housespot` / `house_spot` / `house_reset`, staff gating,
+  `spots.json` persistence across a restart, outfit validation and per-licence storage,
+  kitchen purchases through the economy (success, refusal, unknown item, no economy),
+  and the NUI card in jsdom (rows, hints, show/hide, Lua messages).
 * **46 spawn checks** — the bedroom point and its interior, name lookup (case/space
   insensitive), coordinate parsing from strings and tables, bounds/NaN rejection,
   save/load of `spawns.json`, `spawn_set` / `spawn_reset` / `spawnlist`, the staff
@@ -407,6 +486,10 @@ npm test        # 183 checks
 | **Balances do not save** | The `fk_economy/data` folder must be writable; resources served from an archive cannot be written to. Check the server console for `[fk_economy] Failed to write…`. |
 | **Staff tab missing** | Run `/ecoaccess` in game (or `eco_check &lt;id&gt;` in the console) — it prints whether access was granted and by what. Add the player with `/ecostaff add <id>` (or `eco_staff add <id>` in the console). |
 | **Player does not wake up in the bedroom on join** | Everything needed is visible **in chat**: on a successful join you get `Waking you up in Michael's bedroom…`; `/spawnstatus` prints the resource version, the points it received, the pending flag and your coordinates. `/spawn` forces a spawn (if that works, the spawn logic is fine and only the join trigger is at fault). On the **server** console look for `[fk_spawn] Ready (v…)`, `Player N (name) spawned at michael_bedroom`, and `player N never confirmed the join spawn` (means the client never acknowledged — check that the player's client has the same `fk_spawn` version). No `Ready` line at all = the resource is not running: `ensure fk_spawn` after `ensure fk_economy`. |
+| **No prompt inside the house** | Run `/housemarkers` (staff) to see where the spots are, then `/housespot <name>` standing where you want it. Spots only work within `Config.House.radius` of the mansion. |
+| **Nothing happens when I press E** | Check the spot's `type` in `config.lua` — only `wardrobe`, `kitchen`, `shower`, `bed` and `sofa` have actions. The card should list at least one option; if the spot has no options you get "Nothing to do here yet." |
+| **Food is not charged** | The economy is not running (food is free) or `Config.Food.chargeItems = false`. Prices come from `fk_economy`'s `Config.Items`, so edit them there. |
+| **An outfit looks wrong** | Outfits are captured from your own ped, so they always match what you were wearing. If a slot was saved while a clothing script was mid-change, save it again. |
 | **Spawn is a metre off / in the hallway** | Stand where you want it, face the direction, run `/spawnset` (staff). It is saved to `fk_spawn/data/spawns.json` and applies instantly. `/spawn_reset michael_bedroom` in the console restores `config.lua`. |
 | **Player falls through the floor or spawns floating** | The mansion interior had not streamed in yet. The resource force-loads the interior and waits for collision; if it still happens, raise `Config.Spawn.freezeTime` and check the `z` value (`76.74` is the upstairs floor). Keep `groundSnap` on. |
 | **Everyone got teleported home when I restarted the resource** | They should not — spawns only run for players flagged on join. If it happens, your `playerJoining` handler was reloaded while people were online; reconnect the affected players. |

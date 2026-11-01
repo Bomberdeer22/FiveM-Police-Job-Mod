@@ -66,7 +66,13 @@ JSDOM.fromFile(path.join(ROOT, 'preview/index.html'), {
   doc.getElementById('btn-take').click();
   await wait(50);
   doc.getElementById('btn-take').click();
-  await wait(300);
+
+  // The toast is rendered asynchronously; poll instead of guessing a delay.
+  const errorDeadline = Date.now() + 2500;
+  while (Date.now() < errorDeadline && doc.querySelectorAll('.toast.error').length === 0) {
+    await wait(50);
+  }
+
   check('over-withdraw rejected in demo', doc.querySelectorAll('.toast.error').length >= 1, Array.from(doc.querySelectorAll('.toast')).map((t) => t.className));
 
   // Price list

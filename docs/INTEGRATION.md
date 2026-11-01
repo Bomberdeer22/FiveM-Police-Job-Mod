@@ -169,3 +169,22 @@ a fallback when `fk_economy` is not running.
 The spawn sequence (fade, interior load, ground snap, camera) happens on the
 client, triggered by the server's `fk_spawn:client:doSpawn` with a point table —
 send it another point and the player gets the same polished transition.
+
+## Michael's house (`fk_house`)
+
+The mansion ships with interaction spots (wardrobe, kitchen, shower, bed, sofa). The
+police mod can read them, move them, or add its own by adding entries to
+`Config.Spots` in `fk_house/config.lua` and calling:
+
+```lua
+local spots = exports.fk_house:GetSpots()          -- array of { name, label, type, x, y, z, radius }
+exports.fk_house:SetSpot('kitchen', { x = -802.3, y = 175.1, z = 72.8 }, 'police_mod')
+
+-- Personal outfits live server-side, keyed by licence:
+local outfits = exports.fk_house:GetPlayerOutfits('license:110000112345678')
+-- { [1] = { comps = { { i = 3, d = 15, t = 0 }, ... }, props = { ... } } }
+```
+
+Player outfits are plain component/drawable/texture triples, so the police mod can reuse
+them for uniforms later (`SetPedComponentVariation` per entry) instead of re-inventing
+clothing storage.

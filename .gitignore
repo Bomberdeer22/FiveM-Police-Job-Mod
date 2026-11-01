@@ -8,6 +8,10 @@ fk_economy/data/*.tmp
 fk_spawn/data/spawns.json
 fk_spawn/data/*.tmp
 
+# Runtime house data (spot positions moved in game, personal outfits)
+fk_house/data/*.json
+fk_house/data/*.tmp
+
 # OS / editor noise
 .DS_Store
 Thumbs.db
