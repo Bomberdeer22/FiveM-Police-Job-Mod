@@ -23,7 +23,7 @@ staff money tools. No framework, no database, no other resources required.
 | --- | --- |
 | **Money HUD** | Glassy card showing **Cash** and **Bank**, animated count-up/down, green/red flash and `+$500` float text on every change. |
 | **HUD customiser** | Press **F7** → *HUD Layout*: hit **Start dragging** and the menu slides away so you can drop the HUD anywhere with the mouse. Also corner presets, arrow-key nudging, scale, opacity and compact mode. Saved per player on their own PC. |
-| **Staff panel** | Staff can select any online player and **give** or **take** cash/bank from the menu. Take asks for confirmation. Works for themselves too. Staff = `fk_economy.staff` ACE, identifier allowlist, **or a vMenu admin**. |
+| **Staff panel** | Staff can select any online player and **give** or **take** cash/bank from the menu. Take asks for confirmation. Works for themselves too. Staff come from a simple in-game list (`/ecostaff`) — no ACE, vMenu or Discord setup required. |
 | **Price list** | Every item price lives in `config.lua` and is browsable in the menu's *Price List* tab. The main police mod will read these prices when buying items/vehicles/services. |
 | **API for the main mod** | Server exports (`AddMoney`, `RemoveMoney`, `TryPurchase`, `GetPrice`, …) so the police mod never has to touch balances directly. |
 | **Persistence** | Balances are stored in `fk_economy/data/accounts.json`, keyed by `license:` identifier, auto-saved and flushed on disconnect/shutdown. |
@@ -45,23 +45,36 @@ staff money tools. No framework, no database, no other resources required.
    ensure fk_economy
    ```
 
-3. Give your staff the permission. **If you already run vMenu, this is automatic** — anyone
-   vMenu treats as an admin (e.g. `vMenu.Everything`, `vMenu.OnlinePlayers.PermBan`, or
-   `vMenu.OnlinePlayers.All`) is given the staff panel with no extra setup. See
-   [Staff detection](#staff-detection) below.
+3. Make yourself staff — **no server.cfg edit, no vMenu permissions, no Discord**:
 
-   Otherwise use the economy's own ACE:
+   Join the server and type in chat:
 
-   ```cfg
-   add_ace group.admin fk_economy.staff allow
-   add_principal identifier.license:YOUR_LICENSE_HERE group.admin
+   ```
+   /ecostaff claim
    ```
 
-   For a quick local test, you can instead list identifiers in `config.lua`:
+   That's it. `claim` only works while the staff list is empty (a fresh install), and it
+   adds *you* as the owner. Everyone else is added by staff:
 
-   ```lua
-   Config.Staff.identifiers = { 'license:110000112345678' }
    ```
+   /ecostaff add 3          add the player with server id 3
+   /ecostaff list           show the staff list
+   /ecostaff remove 3       remove them again
+   ```
+
+   The list lives in `fk_economy/data/staff.json`, so it survives restarts. From the
+   server console (or txAdmin) you can always run:
+
+   ```
+   eco_staff online         who is online, with their ids
+   eco_staff add 3          add player id 3
+   eco_staff list
+   eco_staff remove 3
+   ```
+
+   Optional extras (all off by default): a `Config.Staff.identifiers` allowlist,
+   the `fk_economy.staff` ACE, and vMenu admin detection — see
+   [Staff detection](#staff-detection).
 
 4. Start the server. First time a player connects they get the starting balances
    from `config.lua` (`$750` cash / `$2,500` bank by default).
@@ -80,47 +93,52 @@ Players can rebind it in *Settings → Key Bindings → FiveM → "Open Economy 
 
 ### Staff detection
 
-A player counts as staff if **any** of these is true (checked in this order):
+A player counts as staff if **any** of these match, checked in this order:
 
 | # | Source | How |
 | --- | --- | --- |
-| 1 | Economy ACE | `add_ace <group\|identifier> fk_economy.staff allow` |
-| 2 | Identifier allowlist | `Config.Staff.identifiers = { 'license:…' }` |
-| 3 | **vMenu admin** | The player is allowed any node in `Config.Staff.vmenu.permissions` |
+| 1 | **Staff list** *(recommended)* | `/ecostaff claim` on a fresh install, then `/ecostaff add <id>`. Stored in `data/staff.json`. |
+| 2 | Identifier allowlist *(optional)* | `Config.Staff.identifiers = { 'license:…' }` in `config.lua` |
+| 3 | ACE permission *(optional)* | `add_ace group.admin fk_economy.staff allow` |
+| 4 | vMenu admin *(optional, off by default)* | `Config.Staff.vmenu.enabled = true` |
 
-vMenu stores its staff status in ACE permissions, so this is a straight
-`IsPlayerAceAllowed` check on vMenu's own nodes — no exports or events needed, and
-nothing to configure if vMenu is already set up. Default nodes:
+Manage the staff list:
 
-```lua
-'vMenu.Everything',                 -- full menu access
-'vMenu.OnlinePlayers.All',          -- every online-player action
-'vMenu.OnlinePlayers.PermBan',      -- permanent bans
-'vMenu.OnlinePlayers.Unban',        -- lift bans
-'vMenu.OnlinePlayers.Identifiers',  -- view player identifiers
-'vMenu.Staff',                      -- staff-only menu flag
+```
+/ecostaff claim            become staff while the list is empty (one time only)
+/ecostaff add <id>         add an online player (staff only)
+/ecostaff remove <id>      remove a player (staff only, never the last one)
+/ecostaff list             show names, roles and identifiers (staff only)
+/ecostaff                  show your own access + command help
+/ecoaccess                 why do I (not) have staff access?
 ```
 
-Tuning in `config.lua`:
+The console equivalents are `eco_staff add <id>`, `eco_staff remove <id>`,
+`eco_staff list` and `eco_staff online` (lists online players with their ids, handy for
+picking the right one).
+
+Config knobs in `config.lua`:
 
 ```lua
-Config.Staff.vmenu = {
-    enabled = true,
-    includeModerators = false,   -- true also accepts Kick / TempBan / Summon / ViewBannedPlayers
-    extraPermissions = { 'group.dreamstaff' }, -- your own nodes
-}
+Config.Staff.file      = 'data/staff.json' -- where the list is stored
+Config.Staff.allowClaim = true             -- false = console-only setup
+Config.Staff.identifiers = {}              -- optional hard-coded identifiers
+Config.Staff.ace        = 'fk_economy.staff' -- optional ACE fallback
+Config.Staff.vmenu.enabled = false         -- optional vMenu admin detection
 ```
 
 Notes:
 
-* Requires vMenu to be permission-driven (`vmenu_use_permissions true`, the default).
-  With `vmenu_use_permissions false` vMenu has no ACEs to read, so use the economy
-  ACE or the identifier list instead.
-* vMenu admins are logged in the audit file exactly like any other staff member, with
-  their name and server id.
-* If vMenu is not installed the checks simply return false — nothing breaks.
-* Check what a player resolves to with `/ecoaccess` (yourself) or
-  `eco_check <id>` in the server console.
+* The last staff member cannot be removed — otherwise `/ecostaff claim` would be open
+  to anyone again.
+* Set `Config.Staff.allowClaim = false` if you would rather add the first staff member
+  from the console (`eco_staff add <id>`) and never allow claiming.
+* Deleting `data/staff.json` resets the list (and re-opens `claim` while it is empty).
+* If you *do* want vMenu admins to get staff automatically, set
+  `Config.Staff.vmenu.enabled = true`; the nodes that count are
+  `vMenu.Everything`, `vMenu.OnlinePlayers.All`, `vMenu.OnlinePlayers.PermBan`,
+  `vMenu.OnlinePlayers.Unban`, `vMenu.OnlinePlayers.Identifiers` and `vMenu.Staff`
+  (moderators via `includeModerators = true`).
 
 ### Commands
 
@@ -131,16 +149,18 @@ Chat (staff only — validated server-side):
 /takemoney <id> <cash|bank> <amount> [reason]
 /setmoney <id> <cash|bank> <amount> [reason]
 /mymoney
+/ecostaff …                   manage the staff list (see above)
 /ecoaccess                    why do I (not) have staff access?
 ```
 
 Console / rcon:
 
 ```
-eco_save                      flush accounts.json now
-eco_count                     how many accounts are stored
+eco_staff add|remove|list|online    manage the staff list
+eco_save                            flush accounts.json now
+eco_count                           how many accounts are stored
 eco_give <id> <acct> <amount> [reason]
-eco_check <id>                staff access for a player, and where it came from
+eco_check <id>                      staff access for a player, and where it came from
 ```
 
 ### Configuration
@@ -154,7 +174,7 @@ Everything lives in [`fk_economy/config.lua`](fk_economy/config.lua):
 | `Config.Accounts` | Which accounts exist (`cash`, `bank`) |
 | `Config.UI` | Default HUD position/scale/opacity, accent colour, animations, edge snapping |
 | `Config.Keys` | Menu key |
-| `Config.Staff` | ACE permission, identifier allowlist, **vMenu admin detection**, per-action cap, quick amounts, reasons, logging |
+| `Config.Staff` | **Staff list file + first-run claim**, optional identifier allowlist / ACE / vMenu detection, per-action cap, quick amounts, reasons, logging |
 | `Config.Limits` | Max balance, minimum amount, whole numbers |
 | `Config.Persistence` | Data file paths, save interval, log size |
 | `Config.Items` | **Item price list** — the main mod reads this |
@@ -222,6 +242,7 @@ end)
 | File | Purpose |
 | --- | --- |
 | `fk_economy/data/accounts.json` | Balances keyed by identifier (`cash`, `bank`, `earned`, `spent`, `firstSeen`, `lastSeen`) |
+| `fk_economy/data/staff.json` | Staff roster (`name`, `role`, `identifier`, `addedBy`, `addedAt`) |
 | `fk_economy/data/transactions.log` | One line per staff adjustment / purchase (trimmed to `Config.Persistence.maxLogLines`) |
 
 Both are git-ignored. Back up `accounts.json` like any other player data.
@@ -251,13 +272,14 @@ with mocked FiveM natives, and the NUI page runs in jsdom.
 
 ```bash
 npm install
-npm test        # 115 checks
+npm test        # 132 checks
 ```
 
-* **68 server checks** — starting balances, overdraft refusal, invalid
+* **85 server checks** — starting balances, overdraft refusal, invalid
   amounts/accounts/targets, purchase pricing, per-action caps, non-staff rejection,
-  player-list permissions, chat commands, **vMenu admin detection** (admin vs.
-  moderator vs. unrelated vMenu node), JSON persistence across a restart, audit log,
+  player-list permissions, chat/console commands, **staff roster** (claim, add,
+  remove, last-member protection, persistence across a restart, JSON shape),
+  optional vMenu detection (admin vs. moderator vs. unrelated node), audit log,
   balance ceiling.
 * **33 UI checks** — money formatting, HUD rendering, menu/tab flow, drag mode,
   preset saving, staff selection, give/take confirmation, toasts, price list,
@@ -272,7 +294,7 @@ npm test        # 115 checks
 | **UI changes do not appear** | NUI is cached per resource: `restart fk_economy` (or `ensure fk_economy` again) after editing `html/*`. |
 | **HUD position resets** | The layout is stored in client KVP on each player's PC, not on the server. Clearing FiveM's cache or switching PCs resets it to `Config.UI.default`. |
 | **Balances do not save** | The `fk_economy/data` folder must be writable; resources served from an archive cannot be written to. Check the server console for `[fk_economy] Failed to write…`. |
-| **Staff tab missing** | Run `/ecoaccess` in game (or `eco_check &lt;id&gt;` in the console) — it prints whether access was granted and by what. Grant either `fk_economy.staff`, an identifier in `Config.Staff.identifiers`, or a vMenu admin node. If you run vMenu with `vmenu_use_permissions false`, its ACEs do not exist, so use the economy ACE instead. |
+| **Staff tab missing** | Run `/ecoaccess` in game (or `eco_check &lt;id&gt;` in the console) — it prints whether access was granted and by what. Add the player with `/ecostaff add <id>` (or `eco_staff add <id>` in the console). |
 | **`/mymoney` says no account** | The account is created on first join; if you added the resource while players were online, they reconnect (or the server restarts). |
 
 ## Roadmap

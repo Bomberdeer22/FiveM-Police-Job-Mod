@@ -102,8 +102,8 @@ local isStaff = exports.fk_economy:IsStaff(src)   -- economy ACE, identifier lis
 
 -- or the detailed answer, useful for UI/debug output:
 local access = exports.fk_economy:GetStaffAccess(src)
--- { staff = true, source = 'vmenu', matched = 'vMenu.Everything' }
--- source is 'ace' | 'identifier' | 'vmenu' | 'console' | nil
+-- { staff = true, source = 'roster', matched = 'license:110000112345678' }
+-- source is 'roster' | 'identifier' | 'ace' | 'vmenu' | 'console' | nil
 ```
 
 If your police mod needs its own staff-only actions (e.g. a "duty supervisor"

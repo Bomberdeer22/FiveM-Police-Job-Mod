@@ -11,6 +11,7 @@ const FILES = [
   'config.lua',
   'shared/utils.lua',
   'server/accounts.lua',
+  'server/staff.lua',
   'server/main.lua',
   'server/commands.lua',
 ];
@@ -267,7 +268,19 @@ function createHarness(options = {}) {
     return 1;
   });
 
-  FILES.forEach((file) => {
+  function runLua(code, label) {
+    const buffer = to_luastring(code);
+    const loadStatus = lauxlib.luaL_loadbuffer(L, buffer, buffer.length, to_luastring('@' + (label || 'harness')));
+    if (loadStatus !== lua.LUA_OK) {
+      throw new Error('Harness snippet failed to compile: ' + describeTop());
+    }
+    const runStatus = lua.lua_pcall(L, 0, 0, 0);
+    if (runStatus !== lua.LUA_OK) {
+      throw new Error('Harness snippet failed: ' + describeTop());
+    }
+  }
+
+  FILES.forEach((file, index) => {
     const code = fs.readFileSync(path.join(ROOT, file), 'utf8');
     const buffer = to_luastring(code);
     const status = lauxlib.luaL_loadbuffer(L, buffer, buffer.length, to_luastring('@' + file));
@@ -278,6 +291,10 @@ function createHarness(options = {}) {
     if (runStatus !== lua.LUA_OK) {
       throw new Error(`Failed to run ${file}: ` + describeTop());
     }
+
+    // Config tweaks for this harness, applied after config.lua/utils.lua and
+    // before the server modules read them.
+    if (index === 1 && options.overrides) runLua(options.overrides, 'overrides');
   });
 
   function fireNet(name, src, ...args) {
@@ -464,42 +481,109 @@ check('IsStaff export true for admin', isStaffFlag === true, isStaffFlag);
 [isStaffFlag] = h.callExport('IsStaff', 1);
 check('IsStaff export false for normal player', isStaffFlag === false, isStaffFlag);
 
-// -- vMenu admin detection --------------------------------------------------
+// -- staff roster (no ACE, no vMenu) ---------------------------------------
+let [access] = h.callExport('GetStaffAccess', 1);
+check('normal player starts without staff access', access && access.staff === false, access);
+
+h.captured.client.length = 0;
+h.runCommand('ecostaff', 1, ['claim']);
+[access] = h.callExport('GetStaffAccess', 1);
+check('claim makes the first player staff', access && access.staff === true && access.source === 'roster', access);
+
+const claimState = h.captured.client.filter((e) => e.name === 'fk_economy:client:state' && e.target === 1).pop();
+check('claim immediately unlocks the staff UI', claimState && claimState.args[0].staff === true, claimState && claimState.args[0]);
+
+const rosterRaw = h.filesystem['data/staff.json'];
+check('staff.json written on claim', !!rosterRaw, Object.keys(h.filesystem));
+
+let rosterJson = null;
+try { rosterJson = JSON.parse(rosterRaw); } catch (e) { /* ignore */ }
+check('roster stores a license identifier', !!rosterJson && !!rosterJson.staff['license:aaa'], rosterJson && Object.keys(rosterJson.staff));
+check('roster entry records owner role', !!rosterJson && rosterJson.staff['license:aaa'].role === 'owner', rosterJson && rosterJson.staff['license:aaa']);
+
+h.runCommand('ecostaff', 2, ['claim']);
+[access] = h.callExport('GetStaffAccess', 2);
+check('second claim is refused once the list has staff', access && access.staff === false, access);
+
+h.runCommand('ecostaff', 1, ['add', '2']);
+[access] = h.callExport('GetStaffAccess', 2);
+check('roster staff can add another player', access && access.staff === true && access.source === 'roster', access);
+
+h.captured.client.length = 0;
+h.fireNet('fk_economy:server:staffAction', 2, { mode: 'add', account: 'cash', amount: 100, target: 3 });
+let rosterResult = h.captured.client.filter((e) => e.name === 'fk_economy:client:staffResult').pop();
+check('newly added staff can give money', rosterResult && rosterResult.args[0].ok === true, rosterResult && rosterResult.args[0]);
+
+h.runCommand('ecostaff', 1, ['remove', '2']);
+[access] = h.callExport('GetStaffAccess', 2);
+check('removed player loses staff access', access && access.staff === false, access);
+
+h.runCommand('ecostaff', 1, ['remove', '1']);
+[access] = h.callExport('GetStaffAccess', 1);
+check('the last staff member cannot be removed', access && access.staff === true, access);
+
+h.runCommand('eco_staff', 0, ['add', '3']);
+let [access3] = h.callExport('GetStaffAccess', 3);
+check('console can add staff by server id', access3 && access3.staff === true && access3.source === 'roster', access3);
+
+h.captured.client.length = 0;
+h.runCommand('ecostaff', 2, ['add', '1']);
+check('non-staff cannot manage the list', h.captured.client.some((e) => e.name === 'chat:addMessage' && e.target === 2 && /staff access/i.test(e.args[0].args[1])));
+
+const logStart = h.captured.logs.length;
+h.runCommand('eco_staff', 0, ['list']);
+const listLogs = h.captured.logs.slice(logStart).join('\n');
+check('console list shows both staff members', /Staff list \(2\)/.test(listLogs), listLogs);
+
+// -- vMenu admin detection (opt-in) ----------------------------------------
+// vMenu detection is OFF by default, so those ACEs must be ignored...
 let [vmenuAccess] = h.callExport('GetStaffAccess', 4);
+check('vMenu ACEs are ignored while detection is off', vmenuAccess && vmenuAccess.staff === false, vmenuAccess);
+let [watchedNodes] = h.callExport('GetVMenuPermissions');
+check('no vMenu nodes watched while off', watchedNodes && Object.keys(watchedNodes).length === 0, watchedNodes);
+
+// ...and picked up once enabled in config.
+const hv = createHarness({ players, overrides: 'Config.Staff.vmenu.enabled = true' });
+
+[vmenuAccess] = hv.callExport('GetStaffAccess', 4);
 check('vMenu.Everything is detected as admin', vmenuAccess && vmenuAccess.staff === true && vmenuAccess.source === 'vmenu', vmenuAccess);
 check('matched vMenu node reported', vmenuAccess && vmenuAccess.matched === 'vMenu.Everything', vmenuAccess && vmenuAccess.matched);
 
-[vmenuAccess] = h.callExport('GetStaffAccess', 7);
+[vmenuAccess] = hv.callExport('GetStaffAccess', 7);
 check('vMenu.OnlinePlayers.PermBan counts as admin', vmenuAccess && vmenuAccess.staff === true && vmenuAccess.source === 'vmenu', vmenuAccess);
 
-[vmenuAccess] = h.callExport('GetStaffAccess', 3);
+[vmenuAccess] = hv.callExport('GetStaffAccess', 3);
 check('own ACE still takes priority', vmenuAccess && vmenuAccess.staff === true && vmenuAccess.source === 'ace', vmenuAccess);
 
-let [modIsStaff] = h.callExport('IsStaff', 5);
+let [modIsStaff] = hv.callExport('IsStaff', 5);
 check('vMenu moderators are not staff by default', modIsStaff === false, modIsStaff);
-[modIsStaff] = h.callExport('IsStaff', 6);
+[modIsStaff] = hv.callExport('IsStaff', 6);
 check('plain vMenu permissions are not staff', modIsStaff === false, modIsStaff);
 
-let [vmenuNodes] = h.callExport('GetVMenuPermissions');
-check('vMenu node list exposed', Array.isArray(vmenuNodes) && vmenuNodes.includes('vMenu.Everything'), vmenuNodes);
+[watchedNodes] = hv.callExport('GetVMenuPermissions');
+check('vMenu node list exposed', Array.isArray(watchedNodes) && watchedNodes.includes('vMenu.Everything'), watchedNodes);
 
-// A vMenu admin can actually use the staff tools
-h.captured.client.length = 0;
-h.fireNet('fk_economy:server:staffAction', 4, { mode: 'add', account: 'bank', amount: 250, target: 2, reason: 'Bonus' });
-staffResult = h.captured.client.filter((e) => e.name === 'fk_economy:client:staffResult').pop();
-check('vMenu admin can give money via menu', staffResult && staffResult.args[0].ok === true, staffResult && staffResult.args[0]);
-[balance] = h.callExport('GetBalance', 2, 'bank');
-check('vMenu admin action applied', balance === 5250, balance);
+hv.captured.client.length = 0;
+hv.fireNet('fk_economy:server:staffAction', 4, { mode: 'add', account: 'bank', amount: 250, target: 2, reason: 'Bonus' });
+let vmenuResult = hv.captured.client.filter((e) => e.name === 'fk_economy:client:staffResult').pop();
+check('vMenu admin can give money via menu', vmenuResult && vmenuResult.args[0].ok === true, vmenuResult && vmenuResult.args[0]);
 
-h.captured.client.length = 0;
-h.fireNet('fk_economy:server:staffAction', 5, { mode: 'add', account: 'bank', amount: 250, target: 2 });
-staffResult = h.captured.client.filter((e) => e.name === 'fk_economy:client:staffResult').pop();
-check('vMenu moderator cannot give money', staffResult && staffResult.args[0].ok === false, staffResult && staffResult.args[0]);
+let [vmenuBalance] = hv.callExport('GetBalance', 2, 'bank');
+check('vMenu admin action applied', vmenuBalance === 2750, vmenuBalance);
 
-h.captured.client.length = 0;
-h.runCommand('addmoney', 4, ['2', 'cash', '50', 'vMenu test']);
-[balance] = h.callExport('GetBalance', 2, 'cash');
-check('vMenu admin can use chat commands', balance === 800, balance);
+hv.captured.client.length = 0;
+hv.fireNet('fk_economy:server:staffAction', 5, { mode: 'add', account: 'bank', amount: 250, target: 2 });
+vmenuResult = hv.captured.client.filter((e) => e.name === 'fk_economy:client:staffResult').pop();
+check('vMenu moderator cannot give money', vmenuResult && vmenuResult.args[0].ok === false, vmenuResult && vmenuResult.args[0]);
+
+hv.runCommand('addmoney', 4, ['2', 'cash', '50', 'vMenu test']);
+[vmenuBalance] = hv.callExport('GetBalance', 2, 'cash');
+check('vMenu admin can use chat commands', vmenuBalance === 800, vmenuBalance);
+
+hv.captured.client.length = 0;
+hv.runCommand('ecoaccess', 4, []);
+const vmenuAccessMsg = hv.captured.client.filter((e) => e.name === 'chat:addMessage' && e.target === 4).pop();
+check('/ecoaccess reports vMenu admin', vmenuAccessMsg && /vMenu admin/i.test(vmenuAccessMsg.args[0].args[1]), vmenuAccessMsg && vmenuAccessMsg.args[0].args[1]);
 
 // -- commands --------------------------------------------------------------
 h.captured.client.length = 0;
@@ -516,13 +600,13 @@ check('staff command adds money', balance === 5250, balance);
 
 h.runCommand('takemoney', 3, ['2', 'bank', '1000']);
 [balance] = h.callExport('GetBalance', 2, 'bank');
-check('staff command removes money', balance === 4250, balance);
+check('staff command removes money', balance === 4000, balance);
 
-// /ecoaccess explains the decision (handy when debugging vMenu setups)
+// /ecoaccess explains the decision
 h.captured.client.length = 0;
-h.runCommand('ecoaccess', 4, []);
-let accessMsg = h.captured.client.filter((e) => e.name === 'chat:addMessage' && e.target === 4).pop();
-check('/ecoaccess reports vMenu admin', accessMsg && /vMenu admin/i.test(accessMsg.args[0].args[1]), accessMsg && accessMsg.args[0].args[1]);
+h.runCommand('ecoaccess', 1, []);
+let accessMsg = h.captured.client.filter((e) => e.name === 'chat:addMessage' && e.target === 1).pop();
+check('/ecoaccess reports the staff list', accessMsg && /staff list/i.test(accessMsg.args[0].args[1]), accessMsg && accessMsg.args[0].args[1]);
 
 h.captured.client.length = 0;
 h.runCommand('ecoaccess', 6, []);
@@ -540,14 +624,20 @@ check('saved balance matches memory', savedJson && savedJson.accounts['license:a
 check('audit log written', !!h.filesystem['data/transactions.log'] && h.filesystem['data/transactions.log'].includes('actor='), h.filesystem['data/transactions.log'] && h.filesystem['data/transactions.log'].split('\n')[0]);
 
 // Reload from disk in a fresh VM
-const h2 = createHarness({ players, files: { 'data/accounts.json': savedRaw } });
+const h2 = createHarness({
+  players,
+  files: { 'data/accounts.json': savedRaw, 'data/staff.json': h.filesystem['data/staff.json'] },
+});
 h2.fireNet('fk_economy:server:requestState', 1);
 const reloaded = h2.captured.client.filter((e) => e.name === 'fk_economy:client:state').pop();
 check('balance survives restart', reloaded && reloaded.args[0].balances.cash === 5250, reloaded && reloaded.args[0].balances);
 
+let [reloadAccess] = h2.callExport('GetStaffAccess', 1);
+check('staff roster survives a restart', reloadAccess && reloadAccess.staff === true && reloadAccess.source === 'roster', reloadAccess);
+
 // Offline identifier access (staff tooling / other resources)
 let [offline] = h2.callExport('GetMoney', 2);
-check('online lookup still works after reload', offline && offline.bank === 4250, offline);
+check('online lookup still works after reload', offline && offline.bank === 4000, offline);
 
 // -- misc ------------------------------------------------------------------
 const [, errBalance] = h.callExport('AddMoney', 1, 'cash', 100000000, 'Cap test');

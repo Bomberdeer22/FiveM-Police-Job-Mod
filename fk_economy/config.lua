@@ -103,11 +103,33 @@ Config.Keys = {
 --      add_principal identifier.license:YOUR_LICENSE_HERE group.admin
 -- ---------------------------------------------------------------------------
 Config.Staff = {
-    -- ACE permission node checked for staff access
+    -- -----------------------------------------------------------------------
+    -- Staff list (recommended)
+    -- A persistent roster stored in data/staff.json. No ACE permissions, no
+    -- vMenu setup and no Discord needed:
+    --
+    --   In game:            /ecostaff claim     (first time, while list is empty)
+    --                       /ecostaff add 3     (add player with server id 3)
+    --                       /ecostaff list
+    --                       /ecostaff remove 3
+    --   Server console:     eco_staff add 3
+    --                       eco_staff list
+    --                       eco_staff remove 3
+    --
+    -- Staff can manage the list themselves once they are on it.
+    -- -----------------------------------------------------------------------
+    file = 'data/staff.json',
+
+    -- Allow the very first player to run /ecostaff claim while the staff list
+    -- is still empty (handy for a fresh install). Set to false once you have
+    -- added yourself — after that, claim is refused anyway.
+    allowClaim = true,
+
+    -- Optional ACE permission node checked for staff access
     ace = 'fk_economy.staff',
 
-    -- Extra identifiers always treated as staff, e.g.
-    -- { 'license:110000112345678', 'discord:123456789012345678' }
+    -- Optional extra identifiers that are always staff, e.g.
+    -- { 'license:110000112345678' }
     identifiers = {},
 
     -- Allow the server console / rcon to use the money commands
@@ -144,7 +166,9 @@ Config.Staff = {
     -- return false.
     -- -----------------------------------------------------------------------
     vmenu = {
-        enabled = true,
+        -- OFF by default. Turn on only if you want players that vMenu treats as
+        -- admins to be economy staff automatically.
+        enabled = false,
 
         -- Admin-level vMenu permissions. Being allowed any one of these counts.
         permissions = {

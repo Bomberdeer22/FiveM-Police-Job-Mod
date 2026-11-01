@@ -14,6 +14,7 @@ shared_scripts {
 
 server_scripts {
     'server/accounts.lua',
+    'server/staff.lua',
     'server/main.lua',
     'server/commands.lua',
 }

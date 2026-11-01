@@ -22,36 +22,6 @@
 
 local RESOURCE = GetCurrentResourceName()
 
-local STAFF_IDENTIFIERS = {}
-for _, id in ipairs(Config.Staff.identifiers or {}) do
-    STAFF_IDENTIFIERS[string.lower(id)] = true
-end
-
--- vMenu grants its staff their powers through ACE permissions, so "is this
--- person a vMenu admin?" is answered with IsPlayerAceAllowed on vMenu's own
--- permission nodes (see Config.Staff.vmenu).
-local VMENU_PERMISSIONS = {}
-do
-    local vmenu = Config.Staff.vmenu
-    if vmenu and vmenu.enabled ~= false then
-        local seen = {}
-        local function add(list)
-            for _, node in ipairs(list or {}) do
-                if type(node) == 'string' and node ~= '' and not seen[node] then
-                    seen[node] = true
-                    VMENU_PERMISSIONS[#VMENU_PERMISSIONS + 1] = node
-                end
-            end
-        end
-
-        add(vmenu.permissions)
-        if vmenu.includeModerators then
-            add(vmenu.moderatorPermissions)
-        end
-        add(vmenu.extraPermissions)
-    end
-end
-
 -- ---------------------------------------------------------------------------
 -- Player helpers
 -- ---------------------------------------------------------------------------
@@ -116,46 +86,6 @@ end
 -- ---------------------------------------------------------------------------
 -- State sync
 -- ---------------------------------------------------------------------------
-
---- Work out whether a player may use the staff tools, and *why*.
---- Checks, in order: the economy ACE, the identifier allowlist, then vMenu.
---- @param src number|nil
---- @return boolean isStaff
---- @return string|nil source   'console' | 'ace' | 'identifier' | 'vmenu'
---- @return string|nil matched  the permission node / identifier that matched
-function CheckStaff(src)
-    if not src or src < 1 then
-        return Config.Staff.allowConsole == true, 'console', nil
-    end
-
-    -- 1. fk_economy's own permission
-    if IsPlayerAceAllowed(src, Config.Staff.ace) then
-        return true, 'ace', Config.Staff.ace
-    end
-
-    -- 2. Hard-coded identifier allowlist (config.lua)
-    for _, id in ipairs(GetPlayerIdentifiers(src) or {}) do
-        if STAFF_IDENTIFIERS[string.lower(id)] then
-            return true, 'identifier', id
-        end
-    end
-
-    -- 3. vMenu admins: their staff status is stored as ACE permissions
-    for _, node in ipairs(VMENU_PERMISSIONS) do
-        if IsPlayerAceAllowed(src, node) then
-            return true, 'vmenu', node
-        end
-    end
-
-    return false, nil, nil
-end
-
---- Is this player allowed to use the staff tools?
---- @param src number
---- @return boolean
-function IsStaff(src)
-    return CheckStaff(src) == true
-end
 
 --- Push the current balances to a player's HUD/menu.
 --- @param src number
@@ -374,7 +304,15 @@ exports('GetStaffAccess', function(src)
     }
 end)
 exports('GetVMenuPermissions', function()
-    return VMENU_PERMISSIONS
+    return StaffVMenuPermissions()
+end)
+
+-- Staff roster, so the police mod can build its own permission screens later.
+exports('IsOnStaffRoster', function(identifier)
+    return StaffIsRegistered(identifier)
+end)
+exports('GetStaffRoster', function()
+    return StaffList()
 end)
 exports('GetAccountStats', function(src)
     local acc = GetPlayerAccount(src)
@@ -547,4 +485,23 @@ AddEventHandler('playerJoining', function()
     local src = tonumber(source)
     if not src or src < 1 then return end
     pcall(GetPlayerAccount, src)
+end)
+
+
+-- ---------------------------------------------------------------------------
+-- First-run hint
+-- ---------------------------------------------------------------------------
+
+CreateThread(function()
+    Wait(2500)
+
+    if StaffRosterIsEmpty() then
+        print('^3[fk_economy] The staff list is empty.^0')
+        if Config.Staff.allowClaim then
+            print('^3[fk_economy]   In game: /ecostaff claim  (works once, while the list is empty)^0')
+        end
+        print('^3[fk_economy]   Or from the server console: eco_staff add <yourServerId>^0')
+    else
+        print(('^2[fk_economy] %d staff member(s) on the roster.^0'):format(StaffCount()))
+    end
 end)
