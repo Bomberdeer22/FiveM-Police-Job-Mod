@@ -415,6 +415,21 @@ function pushValue(T, S, value) {
   }
 }
 
+// Read a global (or a field of one) without calling it.
+function luaReadGlobal(pathName) {
+  const vm = createHarness();
+  const T = vm.lua;
+  const S = vm.state;
+  const parts = pathName.split('.');
+
+  T.lua_getglobal(S, to_luastring(parts[0]));
+  for (let i = 1; i < parts.length; i += 1) T.lua_getfield(S, -1, to_luastring(parts[i]));
+
+  const value = luaValue(vm, -1);
+  T.lua_settop(S, 0);
+  return value;
+}
+
 function luaCallGlobal(pathName, args = []) {
   const vm = createHarness();
   const T = vm.lua;
@@ -438,6 +453,10 @@ function luaCallGlobal(pathName, args = []) {
   return results;
 }
 
+check('the data folder exists (SaveResourceFile cannot create it)',
+  fs.existsSync(path.join(ROOT, 'data')),
+  path.join(ROOT, 'data'));
+
 const h = createHarness();
 h.runThreads(); // boot thread
 
@@ -459,6 +478,19 @@ check('boot reports the version and spot count',
 
 check('distance is computed in 3D',
   luaCallGlobal('House.distance', [{ x: 0, y: 0, z: 0 }, { x: 3, y: 4, z: 0 }])[0] === 5);
+
+// GetEntityCoords() returns a vector3, whose Lua type is NOT 'table'. A
+// type == 'table' check here returned nil and killed the interaction loop.
+const positionTypes = luaReadGlobal('House.positionTypes') || {};
+check('vector3 is an accepted position type', positionTypes.vector3 === true, positionTypes);
+
+check('vector4 is an accepted position type', positionTypes.vector4 === true);
+
+check('readCoords pulls x/y/z out of a position',
+  luaCallGlobal('House.readCoords', [{ x: 1, y: 2, z: 3 }]).join(',') === '1,2,3');
+
+check('distance survives a bogus position instead of erroring',
+  luaCallGlobal('House.distance', ['nope', { x: 0, y: 0, z: 0 }])[0] === null);
 
 check('nearest spot is found inside its radius',
   (() => {

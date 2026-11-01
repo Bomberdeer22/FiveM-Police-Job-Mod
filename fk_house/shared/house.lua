@@ -29,14 +29,40 @@ function House.toNumber(value)
     return number
 end
 
---- Distance between anything with x/y/z fields (table, vector3, player coords).
+--- Read x/y/z out of anything positional.
+--- CfxLua gives vectors their own type ('vector3'), NOT 'table', so a plain
+--- `type(x) == 'table'` check rejects GetEntityCoords() and silently returns
+--- nil - which killed the interaction loop before it could draw a prompt.
+--- @return number|nil x, number|nil y, number|nil z
+--- Value types that carry x/y/z. CfxLua reports vectors as their own type, so
+--- they have to be listed explicitly; keeping the list here makes the rule
+--- obvious (and testable).
+House.positionTypes = {
+    table = true,
+    vector2 = true,
+    vector3 = true,
+    vector4 = true,
+}
+
+function House.readCoords(value)
+    if not House.positionTypes[type(value)] then return nil end
+
+    local x = House.toNumber(value.x)
+    local y = House.toNumber(value.y)
+    local z = House.toNumber(value.z)
+
+    if not x or not y or not z then return nil end
+
+    return x, y, z
+end
+
+--- Distance between anything with x/y/z (table, vector3, vector4, ped coords).
+--- @return number|nil
 function House.distance(a, b)
-    if type(a) ~= 'table' or type(b) ~= 'table' then return nil end
+    local ax, ay, az = House.readCoords(a)
+    local bx, by, bz = House.readCoords(b)
 
-    local ax, ay, az = House.toNumber(a.x), House.toNumber(a.y), House.toNumber(a.z)
-    local bx, by, bz = House.toNumber(b.x), House.toNumber(b.y), House.toNumber(b.z)
-
-    if not ax or not ay or not az or not bx or not by or not bz then return nil end
+    if not ax or not bx then return nil end
 
     local dx, dy, dz = ax - bx, ay - by, az - bz
 
@@ -70,10 +96,7 @@ function House.normalizeSpot(entry)
 
     if type(entry.type) ~= 'string' or entry.type == '' then return nil, 'missing_type' end
 
-    local coords = entry.coords
-    local x = type(coords) == 'table' and House.toNumber(coords.x) or nil
-    local y = type(coords) == 'table' and House.toNumber(coords.y) or nil
-    local z = type(coords) == 'table' and House.toNumber(coords.z) or nil
+    local x, y, z = House.readCoords(entry.coords)
 
     if not x or not y or not z then return nil, 'invalid_coords' end
     if math.abs(x) > LIMIT_XZ or math.abs(y) > LIMIT_XZ or math.abs(z) > 3000.0 then

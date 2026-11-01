@@ -447,7 +447,7 @@ with mocked FiveM natives, and the NUI page runs in jsdom.
 
 ```bash
 npm install
-npm test        # 234 checks
+npm test        # 241 checks
 ```
 
 * **90 server checks** — starting balances, overdraft refusal, invalid
@@ -461,12 +461,12 @@ npm test        # 234 checks
   preset saving, staff selection, give/take confirmation, toasts, price list,
   delta pills, hidden-HUD behaviour.
 * **14 preview checks** — the `preview/` harness boots and drives the same UI.
-* **51 house checks** — the five spots and their types, 3D distance and nearest-spot
+* **56 house checks** — the five spots and their types, 3D distance and nearest-spot
   lookup, spot validation, `/housespot` / `house_spot` / `house_reset`, staff gating,
   `spots.json` persistence across a restart, outfit validation and per-licence storage,
   kitchen purchases through the economy (success, refusal, unknown item, no economy),
   and the NUI card in jsdom (rows, hints, show/hide, Lua messages).
-* **46 spawn checks** — the bedroom point and its interior, name lookup (case/space
+* **48 spawn checks** — the bedroom point and its interior, name lookup (case/space
   insensitive), coordinate parsing from strings and tables, bounds/NaN rejection,
   save/load of `spawns.json`, `spawn_set` / `spawn_reset` / `spawnlist`, the staff
   gate on `/spawnset`, permission on `/spawn`, the join handshake (a flagged
@@ -486,7 +486,8 @@ npm test        # 234 checks
 | **Balances do not save** | The `fk_economy/data` folder must be writable; resources served from an archive cannot be written to. Check the server console for `[fk_economy] Failed to write…`. |
 | **Staff tab missing** | Run `/ecoaccess` in game (or `eco_check &lt;id&gt;` in the console) — it prints whether access was granted and by what. Add the player with `/ecostaff add <id>` (or `eco_staff add <id>` in the console). |
 | **Player does not wake up in the bedroom on join** | Everything needed is visible **in chat**: on a successful join you get `Waking you up in Michael's bedroom…`; `/spawnstatus` prints the resource version, the points it received, the pending flag and your coordinates. `/spawn` forces a spawn (if that works, the spawn logic is fine and only the join trigger is at fault). On the **server** console look for `[fk_spawn] Ready (v…)`, `Player N (name) spawned at michael_bedroom`, and `player N never confirmed the join spawn` (means the client never acknowledged — check that the player's client has the same `fk_spawn` version). No `Ready` line at all = the resource is not running: `ensure fk_spawn` after `ensure fk_economy`. |
-| **No prompt inside the house** | Run `/housemarkers` (staff) to see where the spots are, then `/housespot <name>` standing where you want it. Spots only work within `Config.House.radius` of the mansion. |
+| **No prompt inside the house** | Run `/housedebug` first — it prints, in chat: how many spots the client received, whether you are inside the house radius, which spots are near you (and within what radius), whether the UI page answered, and whether a menu is open. Then `/housemarkers` (staff) draws a marker **on the floor** at every spot, and `/housespot <name>` saves your position. If `/housedebug` says `spots=0`, the client never got the list — check the server console. |
+| **`Could not write data/…json`** | `SaveResourceFile` cannot create folders: the resource needs a `data` directory next to `fxmanifest.lua`. Every resource ships one with a `.gitkeep`; if you copied files by hand, create `fk_house/data` (and `fk_spawn/data`) yourself and restart. |
 | **Nothing happens when I press E** | Check the spot's `type` in `config.lua` — only `wardrobe`, `kitchen`, `shower`, `bed` and `sofa` have actions. The card should list at least one option; if the spot has no options you get "Nothing to do here yet." |
 | **Food is not charged** | The economy is not running (food is free) or `Config.Food.chargeItems = false`. Prices come from `fk_economy`'s `Config.Items`, so edit them there. |
 | **An outfit looks wrong** | Outfits are captured from your own ped, so they always match what you were wearing. If a slot was saved while a clothing script was mid-change, save it again. |

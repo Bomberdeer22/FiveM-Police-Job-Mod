@@ -74,6 +74,20 @@
 
     window.houseUI = { show, hide };
 
+    // Tell the game the page is alive, so Lua can re-open whatever was showing
+    // after a reload and /housedebug can report "ui=ready".
+    try {
+        if (typeof fetch === 'function') {
+            fetch('https://fk_house/ready', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ready: true }),
+            }).catch(() => {});
+        }
+    } catch (error) {
+        /* running outside the game (preview / tests) */
+    }
+
     window.addEventListener('message', (event) => {
         const message = event.data || {};
 

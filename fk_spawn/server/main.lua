@@ -101,7 +101,8 @@ local function writeOverrides()
     local saved = SaveResourceFile(RESOURCE, FILE, encoded, -1)
 
     if not saved then
-        errorf(('Could not write %s (is the file read-only?).'):format(FILE))
+        errorf(('Could not write %s — is the file read-only, or is the "%s" folder missing? '
+            .. 'SaveResourceFile cannot create folders.'):format(FILE, FILE:match('^(.*)/') or 'data'))
         return false
     end
 

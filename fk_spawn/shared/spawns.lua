@@ -65,7 +65,17 @@ end
 -- Coordinates
 -- ---------------------------------------------------------------------------
 
---- Accepts a table ({x=,y=,z=,w=} or {1,2,3,4} or a vector3/vector4),
+--- Value types that carry x/y/z. CfxLua gives vectors their own type, so
+--- `type(x) == 'table'` is not enough: configs written with vector3/vector4
+--- (the usual FiveM style) must work too.
+Spawn.positionTypes = {
+    table = true,
+    vector2 = true,
+    vector3 = true,
+    vector4 = true,
+}
+
+--- Accepts a table ({x=,y=,z=,w=} or {1,2,3,4}), a vector3/vector4,
 --- or a string such as "-812.56, 174.85, 76.74, 200".
 --- @return table|nil { x, y, z, w }
 function Spawn.parseCoords(input)
@@ -75,7 +85,7 @@ function Spawn.parseCoords(input)
         input = parts
     end
 
-    if type(input) ~= 'table' then return nil end
+    if not Spawn.positionTypes[type(input)] then return nil end
 
     local x = Spawn.toNumber(input.x or input[1])
     local y = Spawn.toNumber(input.y or input[2])
@@ -89,7 +99,7 @@ end
 
 --- @return boolean ok, string|nil reason
 function Spawn.validateCoords(coords)
-    if type(coords) ~= 'table' then return false, 'invalid_coords' end
+    if not Spawn.positionTypes[type(coords)] then return false, 'invalid_coords' end
 
     local x = Spawn.toNumber(coords.x)
     local y = Spawn.toNumber(coords.y)

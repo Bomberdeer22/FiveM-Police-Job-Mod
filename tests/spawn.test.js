@@ -454,6 +454,9 @@ function luaCallGlobal(path, args = []) {
 // config + shared helpers
 // ---------------------------------------------------------------------------
 
+check('the data folder exists (SaveResourceFile cannot create it)',
+  fs.existsSync(path.join(__dirname, '..', 'fk_spawn', 'data')));
+
 const h = createHarness();
 
 check("default spawn is Michael's bedroom",
@@ -637,6 +640,19 @@ check('moving a point re-syncs every client', broadcasts.length >= 2, broadcasts
 check('sanitizeName strips apostrophes and spaces',
   luaCallGlobal('Spawn.sanitizeName', ["Michael's Bedroom!"])[0] === 'michaels_bedroom',
   luaCallGlobal('Spawn.sanitizeName', ["Michael's Bedroom!"]));
+
+check('vector4 is an accepted config type for spawn coords',
+  (() => {
+    const vm = createHarness();
+    const T = vm.lua;
+    const S = vm.state;
+    T.lua_getglobal(S, to_luastring('Spawn'));
+    T.lua_getfield(S, -1, to_luastring('positionTypes'));
+    T.lua_getfield(S, -1, to_luastring('vector4'));
+    const value = T.lua_toboolean(S, -1);
+    T.lua_settop(S, 0);
+    return value === true;
+  })());
 
 check('parseCoords reads a coordinate string',
   (() => {

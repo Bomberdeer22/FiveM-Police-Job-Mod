@@ -14,6 +14,7 @@ local markers = false
 local sessionOutfit = nil   -- what the player was wearing when they arrived
 local lastOutfit = nil      -- last outfit we applied
 local pendingPurchase = nil -- food waiting on the economy's answer
+local uiReady = false       -- has html/app.js said hello?
 local menuOpenedAt = 0      -- GetGameTimer() when the card opened
 
 local COMPONENTS = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 }
@@ -221,6 +222,10 @@ local function openMenu(spot)
 
     menu = { spot = spot, options = options }
     menuOpenedAt = GetGameTimer()
+
+    if Config.Debug then
+        print(('[fk_house] opening %s with %d option(s)'):format(spot.name, #options))
+    end
 
     local payload = {}
 
@@ -457,7 +462,7 @@ local function drawHelp(spot)
 end
 
 local function drawSpotLabel(spot)
-    local onScreen, x, y = GetScreenCoordFromWorldCoord(spot.x, spot.y, spot.z + 0.4)
+    local onScreen, x, y = GetScreenCoordFromWorldCoord(spot.x, spot.y, spot.z + 1.25)
 
     if not onScreen then return end
 
@@ -467,16 +472,23 @@ local function drawSpotLabel(spot)
     SetTextColour(235, 240, 255, 255)
     SetTextDropshadow(1, 0, 0, 0, 180)
     SetTextEntry('STRING')
-    AddTextComponentSubstringPlayerName(spot.name)
+    AddTextComponentSubstringPlayerName(('%s  (%s, r%.1f)'):format(spot.name, spot.type, spot.radius))
     DrawText(x, y)
 end
 
 local function drawMarkers()
     for _, spot in ipairs(spots) do
-        DrawMarker(1, spot.x, spot.y, spot.z - 1.0,
+        -- Marker sits ON the floor at the spot (the coordinates are ped feet),
+        -- so what you see is exactly where you have to stand.
+        DrawMarker(1, spot.x, spot.y, spot.z + 0.02,
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            0.5, 0.5, 0.5, 59, 130, 246, 90,
+            spot.radius, spot.radius, 0.45, 59, 130, 246, 110,
             false, false, 2, false, nil, nil, false)
+
+        DrawMarker(0, spot.x, spot.y, spot.z + 2.1,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.25, 0.25, 0.25, 147, 197, 253, 200,
+            false, true, 2, false, nil, nil, false)
 
         drawSpotLabel(spot)
     end
@@ -489,6 +501,14 @@ end
 CreateThread(function()
     TriggerServerEvent('fk_house:server:requestSpots')
     TriggerServerEvent('fk_house:server:requestOutfits')
+
+    Wait(8000)
+
+    if #spots == 0 then
+        notify('fk_house: no spots arrived from the server (see the server console).')
+    elseif Config.Debug then
+        notify(('fk_house ready: %d spot(s)'):format(#spots))
+    end
 
     -- Re-ask when a player reconnects to the shard mid-session.
     while true do
@@ -540,8 +560,10 @@ CreateThread(function()
             local ped = PlayerPedId()
             local coords = GetEntityCoords(ped)
 
-            if House.distance(coords, Config.House.coords) <= (Config.House.radius or 45.0) then
-                local spot = House.nearest(spots, { x = coords.x, y = coords.y, z = coords.z })
+            local houseDistance = House.distance(coords, Config.House.coords)
+
+            if houseDistance and houseDistance <= (Config.House.radius or 45.0) then
+                local spot = House.nearest(spots, coords)
 
                 if spot then
                     wait = 0
@@ -555,6 +577,10 @@ CreateThread(function()
                             sessionOutfit = captureOutfit()
                         end
 
+                        if Config.Debug then
+                            print(('[fk_house] E pressed at %s'):format(spot.name))
+                        end
+
                         openMenu(spot)
                     end
                 end
@@ -563,6 +589,24 @@ CreateThread(function()
 
         Wait(wait)
     end
+end)
+
+-- ---------------------------------------------------------------------------
+-- NUI handshake
+-- ---------------------------------------------------------------------------
+
+RegisterNUICallback('ready', function(_, callback)
+    uiReady = true
+    print('[fk_house] NUI ready')
+
+    -- Re-open whatever was on screen (the page may have reloaded).
+    if menu then
+        local spot = menu.spot
+        closeMenu()
+        openMenu(spot)
+    end
+
+    callback({ ok = true })
 end)
 
 -- ---------------------------------------------------------------------------
@@ -612,6 +656,47 @@ end, false)
 RegisterCommand('housemarkers', function()
     markers = not markers
     notify(markers and 'Spot markers on.' or 'Spot markers off.')
+end, false)
+
+--- /housedebug — everything needed to work out why a prompt is missing.
+RegisterCommand('housedebug', function()
+    local ped = PlayerPedId()
+    local coords = GetEntityCoords(ped)
+    local houseDistance = House.distance(coords, Config.House.coords)
+    local inside = houseDistance ~= nil and houseDistance <= (Config.House.radius or 45.0)
+
+    notify(('spots=%d | in house=%s (%.1fm of %.0fm) | ui=%s | menu=%s | busy=%s')
+        :format(#spots, tostring(inside), houseDistance or -1, Config.House.radius or 45.0,
+            tostring(uiReady), menu and menu.spot.name or 'none', tostring(busy)))
+
+    if #spots == 0 then
+        return notify('No spots received from the server — check the server console for fk_house errors.')
+    end
+
+    local sorted = {}
+
+    for _, spot in ipairs(spots) do
+        sorted[#sorted + 1] = { spot = spot, distance = House.distance(coords, spot) or 9999.0 }
+    end
+
+    for _, spot in ipairs(spots) do
+        if House.distance(coords, spot) == nil then
+            notify(('  %s: coordinates unreadable (%s, %s, %s)')
+                :format(spot.name, tostring(spot.x), tostring(spot.y), tostring(spot.z)))
+        end
+    end
+
+    table.sort(sorted, function(a, b) return a.distance < b.distance end)
+
+    for index = 1, math.min(#sorted, 4) do
+        local entry = sorted[index]
+        local reachable = entry.distance <= entry.spot.radius
+
+        notify(('  %s%s — %.1fm away (radius %.1fm)')
+            :format(reachable and '> ' or '  ', entry.spot.name, entry.distance, entry.spot.radius))
+    end
+
+    notify('Press E inside a radius to open the menu.')
 end, false)
 
 RegisterCommand('househelp', function()

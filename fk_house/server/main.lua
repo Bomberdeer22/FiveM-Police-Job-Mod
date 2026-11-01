@@ -91,7 +91,8 @@ local function saveSpots()
     end
 
     if not SaveResourceFile(RESOURCE, SPOTS_FILE, encoded, -1) then
-        errorf(('Could not write %s.'):format(SPOTS_FILE))
+        errorf(('Could not write %s — does the "%s" folder exist in the resource? '
+            .. 'SaveResourceFile cannot create folders.'):format(SPOTS_FILE, SPOTS_FILE:match('^(.*)/') or 'data'))
         return false
     end
 
@@ -218,7 +219,8 @@ local function saveOutfits()
     end
 
     if not SaveResourceFile(RESOURCE, OUTFITS_FILE, encoded, -1) then
-        errorf(('Could not write %s.'):format(OUTFITS_FILE))
+        errorf(('Could not write %s — does the "%s" folder exist in the resource? '
+            .. 'SaveResourceFile cannot create folders.'):format(OUTFITS_FILE, OUTFITS_FILE:match('^(.*)/') or 'data'))
         return false
     end
 
