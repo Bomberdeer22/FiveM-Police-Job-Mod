@@ -188,7 +188,10 @@ npm run preview          # python3 -m http.server 8000
 ```
 
 The demo toolbar at the top substitutes for the F7 key and fakes money changes.
-`preview/` is not referenced by `fxmanifest.lua` and is safe to leave out of a deploy.
+The dark backdrop behind the UI in that page is only a stand-in for the game —
+the real resource page is fully transparent, so nothing is drawn behind the HUD
+in-game. `preview/` is not referenced by `fxmanifest.lua` and is safe to leave out
+of a deploy.
 
 ## Testing
 
@@ -208,6 +211,17 @@ npm test        # 102 checks
   preset saving, staff selection, give/take confirmation, toasts, price list,
   delta pills, hidden-HUD behaviour.
 * **14 preview checks** — the `preview/` harness boots and drives the same UI.
+
+## Troubleshooting
+
+| Symptom | Cause / fix |
+| --- | --- |
+| **Black (or white) box behind the HUD or menu** | The page must render over the game with no background. `html, body` are forced transparent, and **`backdrop-filter` must not be used** — FiveM's CEF does not support it and paints a hard black rectangle behind the element. If you add custom CSS, avoid `backdrop-filter`, `filter` and `mix-blend-mode`. |
+| **UI changes do not appear** | NUI is cached per resource: `restart fk_economy` (or `ensure fk_economy` again) after editing `html/*`. |
+| **HUD position resets** | The layout is stored in client KVP on each player's PC, not on the server. Clearing FiveM's cache or switching PCs resets it to `Config.UI.default`. |
+| **Balances do not save** | The `fk_economy/data` folder must be writable; resources served from an archive cannot be written to. Check the server console for `[fk_economy] Failed to write…`. |
+| **Staff tab missing** | The player is missing the ACE permission. `add_ace group.admin fk_economy.staff allow` + `add_principal identifier.license:… group.admin`, then reconnect. |
+| **`/mymoney` says no account** | The account is created on first join; if you added the resource while players were online, they reconnect (or the server restarts). |
 
 ## Roadmap
 
