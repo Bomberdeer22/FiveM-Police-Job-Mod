@@ -1,5 +1,8 @@
 # Using `fk_economy` from the police mod
 
+> Spawning is handled by the sibling resource `fk_spawn` — see
+> [Spawning](#spawning-fk_spawn) at the end of this document.
+
 `fk_economy` owns player balances. The police mod should **never** write to
 `accounts.json` or keep its own copy of a balance — always go through the exports.
 That keeps the HUD in sync, keeps the audit log complete, and means the server
@@ -98,7 +101,7 @@ should take precedence, either change `Config.Keys.menu` or call
 ## Checking staff from another resource
 
 ```lua
-local isStaff = exports.fk_economy:IsStaff(src)   -- economy ACE, identifier list, or vMenu admin
+local isStaff = exports.fk_economy:IsStaff(src)   -- staff roster, identifier list, ACE, or vMenu admin
 
 -- or the detailed answer, useful for UI/debug output:
 local access = exports.fk_economy:GetStaffAccess(src)
@@ -131,3 +134,38 @@ menu), reuse this so one permission model covers the whole mod.
 
 `earned` / `spent` are lifetime totals that a stats or achievements system can use
 later. `GetAccountStats(src)` returns them.
+
+## Spawning (`fk_spawn`)
+
+`fk_spawn` puts players in Michael's bedroom on join and owns the spawn point
+list. The police mod should not teleport players itself — ask `fk_spawn`.
+
+```lua
+-- Where should this player spawn? (table with name, label, x, y, z, w)
+local point = exports.fk_spawn:GetSpawnPoint()          -- default point
+local named = exports.fk_spawn:GetSpawnPoint('michael_bedroom')
+local all   = exports.fk_spawn:GetSpawnPoints()         -- array
+
+-- React once a player is actually standing at their spawn point:
+AddEventHandler('fk_spawn:server:playerSpawned', function(src, spawnName, x, y, z)
+    if spawnName == 'michael_bedroom' then
+        -- e.g. set duty state, hand out a starter item, open the department UI
+    end
+end)
+```
+
+Move a point from your own code (staff UI, mission setup, …):
+
+```lua
+exports.fk_spawn:SetSpawnPoint('michael_bedroom', { x = -812.56, y = 174.85, z = 76.74, w = 200.0 }, 'police_mod')
+-- validates the coordinates, saves data/spawns.json and re-syncs every client
+exports.fk_spawn:ResetSpawnPoint('michael_bedroom')     -- back to config.lua
+```
+
+Staff checks come from the economy automatically (`/ecostaff`); if you call
+`IsSpawnStaff` yourself it uses the same answer, with the `fk_spawn.staff` ACE as
+a fallback when `fk_economy` is not running.
+
+The spawn sequence (fade, interior load, ground snap, camera) happens on the
+client, triggered by the server's `fk_spawn:client:doSpawn` with a point table —
+send it another point and the player gets the same polished transition.

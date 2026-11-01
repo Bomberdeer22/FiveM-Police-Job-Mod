@@ -4,6 +4,10 @@ fk_economy/data/transactions.log
 fk_economy/data/staff.json
 fk_economy/data/*.tmp
 
+# Runtime spawn positions (written by /spawnset)
+fk_spawn/data/spawns.json
+fk_spawn/data/*.tmp
+
 # OS / editor noise
 .DS_Store
 Thumbs.db

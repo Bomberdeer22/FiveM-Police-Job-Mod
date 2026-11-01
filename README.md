@@ -3,10 +3,11 @@
 A police job mod for FiveM (GTA V / GTA V Enhanced), in the spirit of LSPDFR Advanced.
 
 **Current status:** the economic foundation — everything the main mod will later need to
-move money around — is built and tested.
+move money around — plus the spawn manager are built and tested.
 
 ```
-fk_economy/          <- the economy resource (this is the dependency)
+fk_economy/          <- the economy resource (the money dependency)
+fk_spawn/            <- spawn manager: players wake up in Michael's bedroom
 preview/             <- dev-only browser preview of the UI (not shipped to the server)
 ```
 
@@ -249,6 +250,97 @@ Both are git-ignored. Back up `accounts.json` like any other player data.
 
 ---
 
+## fk_spawn
+
+Spawn manager. Every player wakes up in **Michael De Santa's bedroom** in the
+Rockford Hills mansion — fade to black, teleport, settle on the floor, short
+establishing shot, fade back in — instead of dropping in at the default spawn.
+
+### Install
+
+1. Copy the `fk_spawn` folder into your `resources` directory.
+2. Add to `server.cfg`, after the economy:
+
+   ```cfg
+   ensure fk_economy
+   ensure fk_spawn
+   ```
+
+   `fk_spawn` uses `fk_economy`'s staff list (`/ecostaff`) for `/spawnset`. If you
+   run it without the economy it falls back to the ACE `fk_spawn.staff`.
+3. Join the server: the loading screen closes and you wake up in the bedroom.
+
+### Commands
+
+| Command | Who | What |
+| --- | --- | --- |
+| `/spawn` | everyone | respawn at the default point (Michael's bedroom) |
+| `/spawn <name>` | everyone | respawn at a named point |
+| `/spawnlist` | everyone | list every configured point and its coordinates |
+| `/spawnset [name]` | staff | save **your current position and heading** as that spawn point |
+| `spawn_set <name> <x> <y> <z> [heading]` | console / txAdmin | same, from the server console |
+| `spawn_reset <name>` | console | forget the saved position, go back to `config.lua` |
+
+Players can be told not to self-spawn with `Config.Spawn.allowPlayerCommand = false`
+(staff can still use `/spawn`).
+
+### The bedroom coordinates
+
+```lua
+coords = { x = -812.56, y = 174.85, z = 76.74, w = 200.0 }
+```
+
+That is the upstairs floor of the mansion (`z 76.74`; the ground floor is `72.8`),
+which is the position used by the apartment/interior scripts that spawn players in
+Michael's house. `w` is the heading the player faces on arrival.
+
+**If it lands a metre away from where you want it** (MLO edits, custom mansion
+replacements, or you'd rather spawn beside the bed): walk to the exact spot in game,
+look in the direction you want, and run:
+
+```
+/spawnset
+```
+
+It writes `fk_spawn/data/spawns.json`, takes effect for everyone immediately, and
+needs no restart. `/spawn_reset michael_bedroom` from the console undoes it.
+
+### Configuration
+
+| Key | Default | What it does |
+| --- | --- | --- |
+| `Config.Spawns` | Michael's bedroom | The spawn point list (`name`, `label`, `coords`, `interior`) |
+| `Config.DefaultSpawn` | `'michael_bedroom'` | Point used on join and by `/spawn` with no argument |
+| `Config.Interiors` | `michael_house` | Interior instance force-loaded before the teleport |
+| `Config.Spawn.onJoin` | `true` | Play the spawn when a player joins |
+| `Config.Spawn.allowPlayerCommand` | `true` | Let players use `/spawn` themselves |
+| `Config.Spawn.shutdownLoadingScreen` | `true` | Close the loading screen on the first spawn |
+| `Config.Spawn.freezeTime` | `2000` | Max ms frozen while the world streams in (released early once collision is ready) |
+| `Config.Spawn.groundSnap` | `true` | Drop the ped onto the floor under the point (±`groundSnapRange`) |
+| `Config.Spawn.cinematic` | `true` | Establishing shot that blends into gameplay (`cinematicTime`, `cinematicFov`) |
+| `Config.Spawn.clearArea` | `true` | Clear vehicles/peds standing on the point first |
+| `Config.Spawn.respawnOnDeath` | `false` | Send the player back to the point after dying (off: hospital/other scripts decide) |
+| `Config.Staff.ace` | `'fk_spawn.staff'` | Fallback staff check when `fk_economy` is not running |
+| `Config.Persistence.file` | `data/spawns.json` | Where in-game `/spawnset` positions are saved |
+
+### How the spawn actually works
+
+1. The server flags the player on `playerJoining` (so **restarting the resource never
+   teleports someone who is already playing**).
+2. On the client: fade out → controls off → leave any vehicle → clear the area →
+   load the mansion interior → teleport → wait for collision → snap to the floor →
+   establishing shot → fade in → controls on.
+3. The client reports back where it ended up; `fk_spawn:server:playerSpawned` fires
+   server-side so the police mod can hook it later.
+
+### Data file
+
+| File | Purpose |
+| --- | --- |
+| `fk_spawn/data/spawns.json` | Positions saved with `/spawnset` (git-ignored) |
+
+---
+
 ## Preview the UI in a browser (dev only)
 
 `preview/` runs the real NUI page against a mock bridge, so you can look at the HUD,
@@ -272,7 +364,7 @@ with mocked FiveM natives, and the NUI page runs in jsdom.
 
 ```bash
 npm install
-npm test        # 137 checks
+npm test        # 179 checks
 ```
 
 * **90 server checks** — starting balances, overdraft refusal, invalid
@@ -286,6 +378,12 @@ npm test        # 137 checks
   preset saving, staff selection, give/take confirmation, toasts, price list,
   delta pills, hidden-HUD behaviour.
 * **14 preview checks** — the `preview/` harness boots and drives the same UI.
+* **42 spawn checks** — the bedroom point and its interior, name lookup (case/space
+  insensitive), coordinate parsing from strings and tables, bounds/NaN rejection,
+  save/load of `spawns.json`, `spawn_set` / `spawn_reset` / `spawnlist`, the staff
+  gate on `/spawnset`, permission on `/spawn`, the join handshake (a flagged
+  player must spawn, an existing player must not), the `playerSpawned` event for
+  other resources, and client re-sync.
 
 ## Troubleshooting
 
@@ -298,6 +396,11 @@ npm test        # 137 checks
 | **HUD position resets** | The layout is stored in client KVP on each player's PC, not on the server. Clearing FiveM's cache or switching PCs resets it to `Config.UI.default`. |
 | **Balances do not save** | The `fk_economy/data` folder must be writable; resources served from an archive cannot be written to. Check the server console for `[fk_economy] Failed to write…`. |
 | **Staff tab missing** | Run `/ecoaccess` in game (or `eco_check &lt;id&gt;` in the console) — it prints whether access was granted and by what. Add the player with `/ecostaff add <id>` (or `eco_staff add <id>` in the console). |
+| **Spawn is a metre off / in the hallway** | Stand where you want it, face the direction, run `/spawnset` (staff). It is saved to `fk_spawn/data/spawns.json` and applies instantly. `/spawn_reset michael_bedroom` in the console restores `config.lua`. |
+| **Player falls through the floor or spawns floating** | The mansion interior had not streamed in yet. The resource force-loads the interior and waits for collision; if it still happens, raise `Config.Spawn.freezeTime` and check the `z` value (`76.74` is the upstairs floor). Keep `groundSnap` on. |
+| **Everyone got teleported home when I restarted the resource** | They should not — spawns only run for players flagged on join. If it happens, your `playerJoining` handler was reloaded while people were online; reconnect the affected players. |
+| **`/spawnset` says "you need staff access"** | Add yourself to the economy staff list first: `/ecostaff claim` (fresh install) or `/ecostaff add <id>`. Without `fk_economy`, use `add_ace group.admin fk_spawn.staff allow`. |
+| **Player spawns in a car / with a car in the room** | `/spawn` pulls the player out of the vehicle before teleporting; if a vehicle follows them, check `Config.Spawn.clearArea` is `true`. |
 | **`/mymoney` says no account** | The account is created on first join; if you added the resource while players were online, they reconnect (or the server restarts). |
 
 ## Roadmap
