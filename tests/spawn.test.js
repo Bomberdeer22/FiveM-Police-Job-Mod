@@ -24,7 +24,7 @@ function createHarness(options = {}) {
   const L = lauxlib.luaL_newstate();
   lualib.luaL_openlibs(L);
 
-  const captured = { client: [], server: [], logs: [], chat: [], timers: [] };
+  const captured = { client: [], server: [], logs: [], chat: [], timers: [], threads: [] };
   const filesystem = options.files || {};
   const staffIds = new Set(options.staff || []);
   const handlers = {};
@@ -204,6 +204,11 @@ function createHarness(options = {}) {
     return 1;
   });
 
+  setGlobal('GetResourceMetadata', () => {
+    lua.lua_pushstring(L, to_luastring('0.1.1'));
+    return 1;
+  });
+
   setGlobal('GetPlayerName', (id) => {
     lua.lua_pushstring(L, to_luastring('Player' + Math.trunc(lua.lua_tonumber(L, 1))));
     return 1;
@@ -278,7 +283,12 @@ function createHarness(options = {}) {
     return 1;
   });
 
-  setGlobal('CreateThread', () => 0);
+  // Threads are queued: the push loop must not run before the tests look at it.
+  setGlobal('CreateThread', () => {
+    lua.lua_pushvalue(L, 1);
+    captured.threads.push(lauxlib.luaL_ref(L, lua.LUA_REGISTRYINDEX));
+    return 0;
+  });
   setGlobal('Wait', () => 0);
 
   // -------------------------------------------------------------------------
@@ -330,6 +340,10 @@ function createHarness(options = {}) {
       if (events[name] === undefined) throw new Error(`no event "${name}"`);
       setGlobalValue('source', source);
       return callRef(events[name], args);
+    },
+    runThreads() {
+      const threads = captured.threads.splice(0, captured.threads.length);
+      threads.forEach((ref) => callRef(ref));
     },
     runTimers() {
       const timers = captured.timers.splice(0, captured.timers.length);
@@ -568,6 +582,12 @@ check('resetting twice is refused politely',
 // ---------------------------------------------------------------------------
 
 const joiner = createHarness();
+joiner.runThreads(); // boot thread
+
+check('boot reports the version and the default point',
+  joiner.captured.logs.some((line) => /Ready \(v[\d.]+\)\. Default spawn: Michael's bedroom/.test(line)),
+  joiner.captured.logs);
+
 joiner.fireEvent('playerJoining', 3);
 check('a joining player is flagged for a spawn',
   joiner.playerState(3, 'fkSpawnPending') === true, joiner.playerState(3, 'fkSpawnPending'));
@@ -576,25 +596,29 @@ joiner.fireNet('fk_spawn:server:isSpawnPending', 3);
 let pendingReply = joiner.captured.client.filter((e) => e.name === 'fk_spawn:client:spawnPending').pop();
 check('the client is told it should spawn', !!pendingReply && pendingReply.args[0] === true, pendingReply && pendingReply.args);
 
-check('a fallback spawn is scheduled in case the client never asks',
-  joiner.captured.timers.length === 1 && joiner.captured.timers[0].ms === 15000,
-  joiner.captured.timers.map((t) => t.ms));
+check('the join schedules a server-side push',
+  joiner.captured.threads.length === 1, joiner.captured.threads.length);
+
+joiner.runThreads();
+const pushes = joiner.captured.client.filter(
+  (e) => e.name === 'fk_spawn:client:doSpawn' && e.args[1] === true,
+);
+check('the server keeps offering the spawn until the client confirms',
+  pushes.length >= 2, pushes.length);
+check('the pushed spawn is the bedroom',
+  pushes.length > 0 && pushes[0].args[0].name === 'michael_bedroom',
+  pushes.length > 0 && pushes[0].args[0]);
 
 joiner.fireNet('fk_spawn:server:spawned', 3, ['michael_bedroom', -812.56, 174.85, 76.74]);
-joiner.captured.client.length = 0;
-joiner.fireNet('fk_spawn:server:isSpawnPending', 3);
-pendingReply = joiner.captured.client.filter((e) => e.name === 'fk_spawn:client:spawnPending').pop();
-const fallbackBefore = joiner.captured.timers.length;
-joiner.runTimers();
-check('the fallback does not fire once the player has spawned',
-  joiner.captured.client.filter((e) => e.name === 'fk_spawn:client:doSpawn').length === 0,
-  { timers: fallbackBefore, spawned: joiner.captured.client.length });
-
 check('other resources are told about the spawn',
   joiner.captured.server.some((e) => e.name === 'fk_spawn:server:playerSpawned'),
   joiner.captured.server);
 
-check('the flag clears once the player has spawned', !!pendingReply && pendingReply.args[0] === false, pendingReply && pendingReply.args);
+joiner.captured.client.length = 0;
+joiner.fireNet('fk_spawn:server:isSpawnPending', 3);
+pendingReply = joiner.captured.client.filter((e) => e.name === 'fk_spawn:client:spawnPending').pop();
+check('the flag clears once the player has spawned',
+  !!pendingReply && pendingReply.args[0] === false, pendingReply && pendingReply.args);
 
 joiner.fireNet('fk_spawn:server:isSpawnPending', 99);
 const strangerReply = joiner.captured.client.filter((e) => e.name === 'fk_spawn:client:spawnPending').pop();

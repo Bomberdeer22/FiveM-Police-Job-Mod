@@ -10,6 +10,7 @@ local spawns          -- last list received from the server
 local defaultName     -- name of the default point
 local spawning = false
 local lastSpawnAt = 0
+local joinSpawnDone = false
 
 -- ---------------------------------------------------------------------------
 -- Notifications
@@ -219,6 +220,8 @@ local function doSpawn(point)
     spawning = true
     lastSpawnAt = GetGameTimer()
 
+    notify(('Waking you up in %s…'):format(point.label or point.name or 'your spawn point'))
+
     -- Watchdog: if a native hiccups halfway through, never leave the player
     -- frozen behind a black screen.
     CreateThread(function()
@@ -355,11 +358,17 @@ local function doSpawn(point)
     end
 
     spawning = false
+    joinSpawnDone = true
     return true
 end
 
-RegisterNetEvent('fk_spawn:client:doSpawn', function(point)
-    doSpawn(point)
+RegisterNetEvent('fk_spawn:client:doSpawn', function(point, isJoin)
+    -- The server keeps pushing until we confirm; ignore the repeats.
+    if isJoin and joinSpawnDone then return end
+
+    if doSpawn(point) and isJoin then
+        joinSpawnDone = true
+    end
 end)
 
 -- ---------------------------------------------------------------------------
@@ -385,23 +394,32 @@ RegisterCommand(Config.Commands.spawnSet or 'spawnset', function(_, args)
     TriggerServerEvent('fk_spawn:server:setSpawn', name, coords.x, coords.y, coords.z, GetEntityHeading(ped))
 end, false)
 
---- /spawnstatus — what this client believes, for quick troubleshooting.
+--- /spawnstatus — what this client believes, printed to chat (works without
+--- the F8 console) and to the F8 console for the record.
 RegisterCommand('spawnstatus', function()
     local ped = PlayerPedId()
     local coords = ped ~= 0 and GetEntityCoords(ped) or { x = 0.0, y = 0.0, z = 0.0 }
     local point = defaultName and Spawn and Spawn.resolve(spawns or {}, defaultName) or nil
+    local version = GetResourceMetadata(GetCurrentResourceName(), 'version', 0) or '?'
 
-    print(('[fk_spawn] points=%d default=%s pending=%s spawning=%s pos=%.2f, %.2f, %.2f')
-        :format(#(spawns or {}), tostring(defaultName), tostring(pendingSpawn), tostring(spawning),
-            coords.x, coords.y, coords.z))
+    local lines = {
+        ('fk_spawn v%s | points=%d | default=%s')
+            :format(version, #(spawns or {}), tostring(defaultName)),
+        ('pending=%s | spawning=%s | done=%s')
+            :format(tostring(pendingSpawn), tostring(spawning), tostring(joinSpawnDone)),
+        ('you are at %.2f, %.2f, %.2f')
+            :format(coords.x, coords.y, coords.z),
+    }
 
     if point then
-        print(('[fk_spawn] default point: %s -> %.2f, %.2f, %.2f (heading %.0f)')
-            :format(point.name, point.x, point.y, point.z, point.w or 0.0))
+        lines[#lines + 1] = ('target %s: %.2f, %.2f, %.2f (heading %.0f)')
+            :format(point.name, point.x, point.y, point.z, point.w or 0.0)
     end
 
-    notify(('points: %d | default: %s | see F8 console for details')
-        :format(#(spawns or {}), tostring(defaultName)))
+    for _, line in ipairs(lines) do
+        print('[fk_spawn] ' .. line)
+        notify(line)
+    end
 end, false)
 
 -- ---------------------------------------------------------------------------
@@ -437,6 +455,8 @@ CreateThread(function()
     end
 
     if not shouldSpawn then
+        -- The server also pushes the spawn on join, so this is only the fast
+        -- path; nothing to do if it says no.
         print('[fk_spawn] no spawn pending (player was already online)')
         return
     end

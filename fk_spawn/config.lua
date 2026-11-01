@@ -53,9 +53,11 @@ Config.Spawn = {
     -- Wait this long after the player becomes active before teleporting, so the
     -- game's own initial spawn has finished and cannot drag them back.
     joinDelay = 1200,
-    -- Safety net: if the client never asks for its spawn (script load race,
-    -- another resource swallowing the event), push it after this many ms.
-    joinFallback = 15000,
+    -- The server keeps offering the spawn until the client confirms it landed.
+    -- First push this long after joining (lets the client scripts load) ...
+    pushDelay = 3000,
+    -- ... and give up after this many ms in total.
+    joinFallback = 30000,
     -- Let players use /spawn themselves (staff can always use it).
     allowPlayerCommand = true,
 

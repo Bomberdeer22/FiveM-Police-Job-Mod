@@ -357,6 +357,43 @@ end)
 -- Join flag — tells the client it should play the spawn once
 -- ---------------------------------------------------------------------------
 
+--- The server drives the join spawn: it keeps offering the point until the
+--- player confirms they are there. No handshake for the client to miss, and a
+--- client that is still loading simply catches the next push.
+--- @param source number
+function pushJoinSpawn(source)
+    CreateThread(function()
+        local point = GetSpawnPoint(GetDefaultSpawnName())
+
+        if not point then
+            warn('No spawn point configured, cannot spawn players on join.')
+            return
+        end
+
+        -- Give the client's scripts a moment to come up.
+        Wait(Config.Spawn.pushDelay or 3000)
+
+        local attempts = 0
+        local maxAttempts = math.max(1, math.floor((Config.Spawn.joinFallback or 30000) / 2500))
+
+        while pendingSpawn[source] and attempts < maxAttempts do
+            if GetPlayerName(source) then
+                TriggerClientEvent('fk_spawn:client:doSpawn', source, point, true)
+                attempts = attempts + 1
+            else
+                break
+            end
+
+            Wait(2500)
+        end
+
+        if pendingSpawn[source] then
+            pendingSpawn[source] = nil
+            warn(('player %d never confirmed the join spawn, giving up.'):format(source))
+        end
+    end)
+end
+
 AddEventHandler('playerJoining', function()
     local source = source
     pendingSpawn[source] = true
@@ -365,19 +402,7 @@ AddEventHandler('playerJoining', function()
         log(('player %d joined — spawn pending'):format(source))
     end
 
-    -- Safety net: if the client never asks (script load race, edited client,
-    -- another resource swallowing the event), push the spawn to them once.
-    SetTimeout(Config.Spawn.joinFallback or 15000, function()
-        if not pendingSpawn[source] then return end
-
-        local point = GetSpawnPoint(GetDefaultSpawnName())
-
-        if not point then return end
-
-        pendingSpawn[source] = nil
-        TriggerClientEvent('fk_spawn:client:doSpawn', source, point)
-        log(('pushed the spawn to player %d (the client never asked for it)'):format(source))
-    end)
+    pushJoinSpawn(source)
 
     local player = Player(source)
 

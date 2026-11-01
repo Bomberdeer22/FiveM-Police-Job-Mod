@@ -315,7 +315,8 @@ needs no restart. `/spawn_reset michael_bedroom` from the console undoes it.
 | `Config.Spawn.onJoin` | `true` | Play the spawn when a player joins |
 | `Config.Spawn.allowPlayerCommand` | `true` | Let players use `/spawn` themselves |
 | `Config.Spawn.joinDelay` | `1200` | ms to wait after the player is active, so the engine's own spawn cannot override ours |
-| `Config.Spawn.joinFallback` | `15000` | ms after which the server pushes the spawn if the client never asked |
+| `Config.Spawn.pushDelay` | `3000` | ms after joining before the server starts pushing the spawn |
+| `Config.Spawn.joinFallback` | `30000` | ms of pushing before the server gives up on that player |
 | `Config.Spawn.shutdownLoadingScreen` | `true` | Close the loading screen on the first spawn |
 | `Config.Spawn.freezeTime` | `2000` | Max ms frozen while the world streams in (released early once collision is ready) |
 | `Config.Spawn.groundSnap` | `true` | Drop the ped onto the floor under the point (±`groundSnapRange`) |
@@ -335,8 +336,9 @@ needs no restart. `/spawn_reset michael_bedroom` from the console undoes it.
 3. The teleport is re-asserted for a few seconds: on slow joins the engine's own
    spawn lands *after* ours and drags the player back to the default location, so
    the client keeps putting them back until the position sticks.
-4. If the client never asks for its spawn, the server pushes it once after
-   `joinFallback` ms.
+4. The server also **pushes** the spawn every 2.5 s (up to `joinFallback`) until
+   the client confirms it landed — so the spawn never depends on the client
+   asking at the right moment.
 5. The client reports back where it ended up; `fk_spawn:server:playerSpawned` fires
    server-side so the police mod can hook it later.
 
@@ -371,7 +373,7 @@ with mocked FiveM natives, and the NUI page runs in jsdom.
 
 ```bash
 npm install
-npm test        # 181 checks
+npm test        # 183 checks
 ```
 
 * **90 server checks** — starting balances, overdraft refusal, invalid
@@ -385,13 +387,13 @@ npm test        # 181 checks
   preset saving, staff selection, give/take confirmation, toasts, price list,
   delta pills, hidden-HUD behaviour.
 * **14 preview checks** — the `preview/` harness boots and drives the same UI.
-* **44 spawn checks** — the bedroom point and its interior, name lookup (case/space
+* **46 spawn checks** — the bedroom point and its interior, name lookup (case/space
   insensitive), coordinate parsing from strings and tables, bounds/NaN rejection,
   save/load of `spawns.json`, `spawn_set` / `spawn_reset` / `spawnlist`, the staff
   gate on `/spawnset`, permission on `/spawn`, the join handshake (a flagged
-  player must spawn, an existing player must not), the fallback spawn that fires
-  when a client never asks, the `playerSpawned` event for other resources, and
-  client re-sync.
+  player must spawn, an existing player must not), the server-side push loop that
+  keeps offering the spawn until the client confirms, the startup banner, the
+  `playerSpawned` event for other resources, and client re-sync.
 
 ## Troubleshooting
 
@@ -404,7 +406,7 @@ npm test        # 181 checks
 | **HUD position resets** | The layout is stored in client KVP on each player's PC, not on the server. Clearing FiveM's cache or switching PCs resets it to `Config.UI.default`. |
 | **Balances do not save** | The `fk_economy/data` folder must be writable; resources served from an archive cannot be written to. Check the server console for `[fk_economy] Failed to write…`. |
 | **Staff tab missing** | Run `/ecoaccess` in game (or `eco_check &lt;id&gt;` in the console) — it prints whether access was granted and by what. Add the player with `/ecostaff add <id>` (or `eco_staff add <id>` in the console). |
-| **Player does not wake up in the bedroom on join** | 1) Server console must print `[fk_spawn] Ready (v0.1.1). Default spawn: Michael's bedroom …` — if it is missing the resource is not running (`ensure fk_spawn` after `ensure fk_economy`, then restart). 2) In game, `/spawnstatus` prints what the client knows (points, pending, position); `/spawn` forces a spawn. 3) F8 shows `[fk_spawn] client ready` and either `spawning at michael_bedroom` or `no spawn pending (player was already online)`. 4) The server logs `Player N (name) spawned at michael_bedroom` when it worked, and `pushed the spawn to player N (the client never asked for it)` when the client missed the handshake (15 s safety net, `Config.Spawn.joinFallback`). |
+| **Player does not wake up in the bedroom on join** | Everything needed is visible **in chat**: on a successful join you get `Waking you up in Michael's bedroom…`; `/spawnstatus` prints the resource version, the points it received, the pending flag and your coordinates. `/spawn` forces a spawn (if that works, the spawn logic is fine and only the join trigger is at fault). On the **server** console look for `[fk_spawn] Ready (v…)`, `Player N (name) spawned at michael_bedroom`, and `player N never confirmed the join spawn` (means the client never acknowledged — check that the player's client has the same `fk_spawn` version). No `Ready` line at all = the resource is not running: `ensure fk_spawn` after `ensure fk_economy`. |
 | **Spawn is a metre off / in the hallway** | Stand where you want it, face the direction, run `/spawnset` (staff). It is saved to `fk_spawn/data/spawns.json` and applies instantly. `/spawn_reset michael_bedroom` in the console restores `config.lua`. |
 | **Player falls through the floor or spawns floating** | The mansion interior had not streamed in yet. The resource force-loads the interior and waits for collision; if it still happens, raise `Config.Spawn.freezeTime` and check the `z` value (`76.74` is the upstairs floor). Keep `groundSnap` on. |
 | **Everyone got teleported home when I restarted the resource** | They should not — spawns only run for players flagged on join. If it happens, your `playerJoining` handler was reloaded while people were online; reconnect the affected players. |
