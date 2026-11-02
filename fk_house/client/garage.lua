@@ -55,13 +55,13 @@ end
 local function applyPersonalFlags(veh)
     if not veh or veh == 0 or not DoesEntityExist(veh) then return end
 
-    pcall(function()
-        SetEntityAsMissionEntity(veh, true, true)
-        SetVehicleHasBeenOwnedByPlayer(veh, true)
-        SetVehicleNeedsToBeHotwired(veh, false)
-        SetVehicleDirtLevel(veh, 0.0)
-        SetEntityDistanceCullingRadius(veh, cfg().cullDistance or 4000.0)
-    end)
+    -- One pcall each: if a native is missing on an older build, the others
+    -- still run. Losing the mission-entity flag would be the bad one.
+    pcall(function() SetEntityAsMissionEntity(veh, true, true) end)
+    pcall(function() SetVehicleHasBeenOwnedByPlayer(veh, true) end)
+    pcall(function() SetVehicleNeedsToBeHotwired(veh, false) end)
+    pcall(function() SetVehicleDirtLevel(veh, 0.0) end)
+    pcall(function() SetEntityDistanceCullingRadius(veh, cfg().cullDistance or 4000.0) end)
 
     if saved and saved.plate then
         pcall(function() SetVehicleNumberPlateText(veh, saved.plate) end)
