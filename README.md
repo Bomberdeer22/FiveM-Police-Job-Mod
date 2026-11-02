@@ -382,27 +382,35 @@ The coordinates in `config.lua` are a starting point. To place a spot exactly wh
 want it (in front of the wardrobe, at the fridge, by the bed):
 
 1. Stand where the player should stand and look at the prop.
-2. `/housespot wardrobe` (staff only — owners are staff via `/ecostaff claim`).
+2. `/housetune wardrobe` (staff only — owners are staff via `/ecostaff claim`) drops a
+   live marker that follows you; walk until it is exactly on the prop and press **E**.
+   `/housespot wardrobe` does the same thing without the preview marker.
 3. `/housemarkers` to draw a marker and the spot name on every spot, so you can see
    what is where. `/housespots` lists them all with the saved ones marked `*`.
+4. `/housescan` prints your position, floor height, heading, interior id and room hash
+   in chat — one paste of that is enough to re-measure a spot.
 
 Everything saved this way goes to `fk_house/data/spots.json` and survives restarts.
 Console equivalents: `house_spot <name> <x> <y> <z>` and `house_reset <name>`.
 
 | Spot name | Type | Default |
 | --- | --- | --- |
-| `wardrobe` | wardrobe | Michael's bedroom |
-| `bed` | bed | Michael's bedroom |
-| `shower` | shower | upstairs bathroom |
-| `kitchen` | kitchen | ground floor |
-| `livingroom` | sofa | ground floor |
+| `wardrobe` | wardrobe | master dressing room, `-812.60, 175.20, 75.80` |
+| `bed` | bed | master bedroom, `-813.20, 179.20, 75.80` |
+| `shower` | shower | family bathroom, `-804.60, 169.90, 75.80` |
+| `kitchen` | kitchen | kitchen at the back of the house, `-800.00, 185.60, 71.85` |
+| `livingroom` | sofa | lounge, `-803.60, 174.40, 71.85` |
+
+Those numbers are measured from the game's interior data, not guessed — see
+[`docs/COORDINATES.md`](docs/COORDINATES.md) for how each one was derived.
 
 ### Configuration
 
 | Key | Default | What it does |
 | --- | --- | --- |
 | `Config.Spots` | 5 spots | What exists in the house: `name`, `label`, `type`, `coords`, `radius` |
-| `Config.House` | mansion centre, 45 m | Interactions only work inside this radius |
+| `Config.House` | interior origin, 30 m | Interactions only work inside this radius |
+| `Config.House.zTolerance` | `2.4` | A spot is ignored when you are on another floor (the floors are 3.9 m apart) |
 | `Config.Keys.interact` | `38` (E) | Interaction key |
 | `Config.Wardrobe.slots` | `3` | Outfit slots per player |
 | `Config.Food.chargeItems` | `true` | Charge kitchen items through the economy |
@@ -447,7 +455,7 @@ with mocked FiveM natives, and the NUI page runs in jsdom.
 
 ```bash
 npm install
-npm test        # 241 checks
+npm test        # 260 checks
 ```
 
 * **90 server checks** — starting balances, overdraft refusal, invalid
@@ -461,8 +469,9 @@ npm test        # 241 checks
   preset saving, staff selection, give/take confirmation, toasts, price list,
   delta pills, hidden-HUD behaviour.
 * **14 preview checks** — the `preview/` harness boots and drives the same UI.
-* **56 house checks** — the five spots and their types, 3D distance and nearest-spot
-  lookup, spot validation, `/housespot` / `house_spot` / `house_reset`, staff gating,
+* **75 house checks** — the five spots and their types, coordinates checked against
+  the game's own interior data (each spot must land in its room and on its floor),
+  floor-aware nearest-spot lookup, 3D distance, spot validation, `/housespot` / `house_spot` / `house_reset`, staff gating,
   `spots.json` persistence across a restart, outfit validation and per-licence storage,
   kitchen purchases through the economy (success, refusal, unknown item, no economy),
   and the NUI card in jsdom (rows, hints, show/hide, Lua messages).
@@ -487,6 +496,7 @@ npm test        # 241 checks
 | **Staff tab missing** | Run `/ecoaccess` in game (or `eco_check &lt;id&gt;` in the console) — it prints whether access was granted and by what. Add the player with `/ecostaff add <id>` (or `eco_staff add <id>` in the console). |
 | **Player does not wake up in the bedroom on join** | Everything needed is visible **in chat**: on a successful join you get `Waking you up in Michael's bedroom…`; `/spawnstatus` prints the resource version, the points it received, the pending flag and your coordinates. `/spawn` forces a spawn (if that works, the spawn logic is fine and only the join trigger is at fault). On the **server** console look for `[fk_spawn] Ready (v…)`, `Player N (name) spawned at michael_bedroom`, and `player N never confirmed the join spawn` (means the client never acknowledged — check that the player's client has the same `fk_spawn` version). No `Ready` line at all = the resource is not running: `ensure fk_spawn` after `ensure fk_economy`. |
 | **No prompt inside the house** | Run `/housedebug` first — it prints, in chat: how many spots the client received, whether you are inside the house radius, which spots are near you (and within what radius), whether the UI page answered, and whether a menu is open. Then `/housemarkers` (staff) draws a marker **on the floor** at every spot, and `/housespot <name>` saves your position. If `/housedebug` says `spots=0`, the client never got the list — check the server console. |
+| **Markers in the wrong room** | Every default coordinate was measured from the interior's own MLO data — [`docs/COORDINATES.md`](docs/COORDINATES.md) lists the props each one is anchored to and the maths behind it. If your build differs, `/housescan` prints your position, floor height, interior id and room hash in chat, and `/housetune <spot>` saves a spot without editing files. |
 | **`Could not write data/…json`** | `SaveResourceFile` cannot create folders: the resource needs a `data` directory next to `fxmanifest.lua`. Every resource ships one with a `.gitkeep`; if you copied files by hand, create `fk_house/data` (and `fk_spawn/data`) yourself and restart. |
 | **Nothing happens when I press E** | Check the spot's `type` in `config.lua` — only `wardrobe`, `kitchen`, `shower`, `bed` and `sofa` have actions. The card should list at least one option; if the spot has no options you get "Nothing to do here yet." |
 | **Food is not charged** | The economy is not running (food is free) or `Config.Food.chargeItems = false`. Prices come from `fk_economy`'s `Config.Items`, so edit them there. |

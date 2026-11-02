@@ -18,8 +18,15 @@ Config.Debug = false
 -- ---------------------------------------------------------------------------
 Config.House = {
     label = "Michael's house",
-    coords = { x = -802.311, y = 175.056, z = 72.8446 },
-    radius = 45.0,
+    -- The interior is v_michael from v_int_44.rpf; its MLO placement puts the
+    -- origin exactly here (DurtyFree mloInteriors.json -> bh1_48_interior_
+    -- v_michael_milo_.ymap). Every coordinate in this file is derived from that
+    -- origin - see docs/COORDINATES.md for the working.
+    coords = { x = -807.343, y = 174.981, z = 71.163 },
+    radius = 30.0,
+    -- The upstairs floor is 3.91 m above the ground floor, so a plain 3D radius
+    -- fires through ceilings. A spot is only offered when you are on its floor.
+    zTolerance = 2.4,
 }
 
 Config.Keys = {
@@ -41,15 +48,20 @@ Config.Spots = {
         name = 'wardrobe',
         label = 'Wardrobe',
         type = 'wardrobe',
-        coords = { x = -811.30, y = 176.20, z = 76.74 },
-        radius = 3.0,
+        -- Master suite dressing room: wardrobe shell at (-813.95, 174.30),
+        -- shelves at (-811.29, 175.32), clothes rail at (-811.26, 176.32).
+        coords = { x = -812.60, y = 175.20, z = 75.80 },
+        radius = 3.2,
     },
     {
         name = 'bed',
         label = 'Bed',
         type = 'bed',
-        coords = { x = -812.56, y = 174.85, z = 76.74 },
-        radius = 3.0,
+        -- Master bedroom (upstairs, above the front door): room detail anchor
+        -- at (-812.71, 178.40), chandelier at (-814.21, 180.93), balcony doors
+        -- at (-817.17, 178.01). The bed itself is baked into the shell.
+        coords = { x = -813.20, y = 179.20, z = 75.80 },
+        radius = 3.6,
         -- hours advanced by each option and the health given back
         sleep = { hours = 8, health = 100, label = 'Sleep until morning' },
         nap = { hours = 2, health = 40, label = 'Take a nap' },
@@ -58,8 +70,10 @@ Config.Spots = {
         name = 'shower',
         label = 'Shower',
         type = 'shower',
-        coords = { x = -804.95, y = 171.90, z = 76.89 },
-        radius = 2.5,
+        -- Family bathroom off the upstairs hall: sink at (-804.46, 169.07),
+        -- mirror at (-804.71, 169.00), door at (-805.00, 171.90).
+        coords = { x = -804.60, y = 169.90, z = 75.80 },
+        radius = 2.6,
         duration = 5000,
         health = 100,
     },
@@ -67,8 +81,10 @@ Config.Spots = {
         name = 'kitchen',
         label = 'Kitchen',
         type = 'kitchen',
-        coords = { x = -802.31, y = 175.06, z = 72.84 },
-        radius = 3.2,
+        -- Kitchen at the back of the house: fridges at (-804.12, 185.81) and
+        -- (-802.83, 186.30), hob at (-799.80, 187.80), sink at (-796.14, 186.84).
+        coords = { x = -800.00, y = 185.60, z = 71.85 },
+        radius = 4.5,
         options = {
             { id = 'snack', label = 'Make a sandwich', health = 20, description = 'Free. From the fridge.' },
             { id = 'coffee', label = 'Brew a coffee', item = 'coffee', health = 10, description = 'Keeps you awake.' },
@@ -80,8 +96,10 @@ Config.Spots = {
         name = 'livingroom',
         label = 'Living room',
         type = 'sofa',
-        coords = { x = -805.00, y = 177.50, z = 72.84 },
-        radius = 3.2,
+        -- Lounge, ground floor: sofa script seats at (-804.37, 176.86),
+        -- (-802.40, 175.85) and (-806.60, 173.40), projector at (-804.49, 171.94).
+        coords = { x = -803.60, y = 174.40, z = 71.85 },
+        radius = 4.0,
         scenario = 'WORLD_HUMAN_SEAT_BENCH',
         regen = { health = 100, seconds = 30 },
     },

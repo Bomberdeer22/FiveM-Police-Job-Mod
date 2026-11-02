@@ -472,6 +472,57 @@ check('every spot has a sensible radius',
   (spots || []).every((spot) => spot.radius >= 0.5 && spot.radius <= 20),
   (spots || []).map((spot) => spot.radius));
 
+// The coordinates in config.lua are derived from the game's own interior data
+// (docs/COORDINATES.md): v_michael's MLO origin is -807.343, 174.981, 71.163,
+// the ground floor is z 71.85 and the upstairs floor is z 75.74.
+const house = luaReadGlobal('Config.House') || {};
+
+const houseCentre = house.coords || {};
+
+check('house centre is the v_michael MLO origin',
+  Math.abs(houseCentre.x + 807.343) < 0.01 && Math.abs(houseCentre.y - 174.981) < 0.01
+    && Math.abs(houseCentre.z - 71.163) < 0.01,
+  house);
+
+check('spots are gated by floor as well as distance',
+  typeof house.zTolerance === 'number' && house.zTolerance > 0 && house.zTolerance < 3.9,
+  house.zTolerance);
+
+const FLOORS = { upstairs: 75.74, ground: 71.85 };
+const ROOMS = {
+  wardrobe: { x: [-815, -810], y: [173, 177.5], floor: 'upstairs' },
+  bed: { x: [-817, -809], y: [176, 183], floor: 'upstairs' },
+  shower: { x: [-807, -802], y: [166.5, 172.5], floor: 'upstairs' },
+  kitchen: { x: [-806.5, -794.5], y: [182, 190], floor: 'ground' },
+  livingroom: { x: [-808, -800], y: [171, 179], floor: 'ground' },
+};
+
+Object.entries(ROOMS).forEach(([name, room]) => {
+  const spot = (spots || []).find((entry) => entry.name === name);
+
+  check(`${name} sits in the room it belongs to`,
+    !!spot && spot.x >= room.x[0] && spot.x <= room.x[1]
+      && spot.y >= room.y[0] && spot.y <= room.y[1],
+    spot);
+
+  check(`${name} is on the ${room.floor} floor`,
+    !!spot && Math.abs(spot.z - FLOORS[room.floor]) < 0.35,
+    spot && spot.z);
+
+  check(`${name} is inside the house radius`,
+    !!spot && Math.hypot(spot.x - houseCentre.x, spot.y - houseCentre.y) <= house.radius,
+    spot);
+});
+
+check('an upstairs spot does not fire from the floor below',
+  luaCallGlobal('House.nearest', [spots, { x: -804.6, y: 169.9, z: 71.85 }, house.zTolerance])[0] === null);
+
+check('the same spot fires when you are on its floor',
+  (() => {
+    const [spot] = luaCallGlobal('House.nearest', [spots, { x: -804.6, y: 169.9, z: 75.8 }, house.zTolerance]);
+    return spot && spot.name === 'shower';
+  })());
+
 check('boot reports the version and spot count',
   h.captured.logs.some((line) => /Ready \(v[\d.]+\)\. 5 spot\(s\)/.test(line)),
   h.captured.logs);
@@ -494,8 +545,8 @@ check('distance survives a bogus position instead of erroring',
 
 check('nearest spot is found inside its radius',
   (() => {
-    const [spot] = luaCallGlobal('House.nearest', [spots, { x: -812.56, y: 174.85, z: 76.74 }]);
-    return spot && spot.name === 'bed';
+    const [spot] = luaCallGlobal('House.nearest', [spots, { x: -812.56, y: 174.85, z: 75.8 }]);
+    return spot && spot.name === 'wardrobe';
   })());
 
 check('nothing is returned outside every radius',
@@ -591,7 +642,7 @@ restarted.runCommand('house_reset', 0, ['kitchen']);
 const [resetSpots] = restarted.callExport('GetSpots');
 const resetKitchen = (resetSpots || []).find((spot) => spot.name === 'kitchen');
 check('house_reset restores config.lua values',
-  !!resetKitchen && resetKitchen.x === -802.31, resetKitchen);
+  !!resetKitchen && resetKitchen.x === -800, resetKitchen);
 
 // ---------------------------------------------------------------------------
 // server: outfits

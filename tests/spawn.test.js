@@ -465,9 +465,9 @@ check("default spawn is Michael's bedroom",
 
 const [bedroom] = h.callExport('GetSpawnPoint', 'michael_bedroom');
 check('bedroom is upstairs in the mansion',
-  !!bedroom && bedroom.z > 76 && bedroom.z < 78 && bedroom.x < -800, bedroom);
+  !!bedroom && bedroom.z > 75.4 && bedroom.z < 76.4 && bedroom.x < -800, bedroom);
 check('bedroom uses the interior coordinates',
-  !!bedroom && bedroom.x === -812.56 && bedroom.y === 174.85 && bedroom.z === 76.74, bedroom);
+  !!bedroom && bedroom.x === -810.6 && bedroom.y === 178.2 && bedroom.z === 75.9, bedroom);
 check('bedroom carries a heading', !!bedroom && typeof bedroom.w === 'number', bedroom && bedroom.w);
 check('bedroom loads the mansion interior',
   !!bedroom && bedroom.interior === 'michael_house', bedroom && bedroom.interior);
@@ -573,7 +573,7 @@ check('moved spawn point survives a restart',
 restarted.runCommand('spawn_reset', 0, ['michael_bedroom']);
 const [afterReset] = restarted.callExport('GetSpawnPoint', 'michael_bedroom');
 check('spawn_reset restores config.lua values',
-  !!afterReset && afterReset.y === 174.85 && afterReset.z === 76.74, afterReset);
+  !!afterReset && afterReset.y === 178.2 && afterReset.z === 75.9, afterReset);
 
 restarted.runCommand('spawn_reset', 0, ['michael_bedroom']);
 check('resetting twice is refused politely',
@@ -612,7 +612,7 @@ check('the pushed spawn is the bedroom',
   pushes.length > 0 && pushes[0].args[0].name === 'michael_bedroom',
   pushes.length > 0 && pushes[0].args[0]);
 
-joiner.fireNet('fk_spawn:server:spawned', 3, ['michael_bedroom', -812.56, 174.85, 76.74]);
+joiner.fireNet('fk_spawn:server:spawned', 3, ['michael_bedroom', -810.6, 178.2, 75.9]);
 check('other resources are told about the spawn',
   joiner.captured.server.some((e) => e.name === 'fk_spawn:server:playerSpawned'),
   joiner.captured.server);
@@ -629,7 +629,7 @@ check('players already on the server are not teleported',
   !!strangerReply && strangerReply.args[0] === false, strangerReply && strangerReply.args);
 
 h.captured.client.length = 0;
-h.runCommand('spawn_set', 0, ['michael_bedroom', -812.56, 174.85, 76.74, 200]);
+h.runCommand('spawn_set', 0, ['michael_bedroom', -810.6, 178.2, 75.9, 90]);
 const broadcasts = h.captured.client.filter((e) => e.name === 'fk_spawn:client:spawns');
 check('moving a point re-syncs every client', broadcasts.length >= 2, broadcasts.length);
 
@@ -689,10 +689,10 @@ check('normalize defaults the heading to 0',
   })());
 
 const [described] = luaCallGlobal('Spawn.describe', [
-  { name: 'michael_bedroom', label: "Michael's bedroom", x: -812.56, y: 174.85, z: 76.74 },
+  { name: 'michael_bedroom', label: "Michael's bedroom", x: -810.6, y: 178.2, z: 75.9 },
 ]);
 check('describe reads like a sentence',
-  typeof described === 'string' && described.includes("Michael's bedroom") && described.includes('-812.56'),
+  typeof described === 'string' && described.includes("Michael's bedroom") && described.includes('-810.60'),
   described);
 
 // ---------------------------------------------------------------------------

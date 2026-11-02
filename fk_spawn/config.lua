@@ -22,7 +22,10 @@ Config.Spawns = {
     {
         name = 'michael_bedroom',
         label = "Michael's bedroom",
-        coords = { x = -812.56, y = 174.85, z = 76.74, w = 200.0 },
+        -- Researched position: inside the master bedroom, just past the suite
+        -- door, facing into the room (see docs/COORDINATES.md). The floor up
+        -- here is at 75.74; the old 76.74 point floated a metre above it.
+        coords = { x = -810.60, y = 178.20, z = 75.90, w = 90.0 },
         enabled = true,
         interior = 'michael_house', -- loads the mansion interior before spawning
     },
@@ -38,8 +41,9 @@ Config.DefaultSpawn = 'michael_bedroom'
 -- through an empty shell while the MLO streams in.
 Config.Interiors = {
     michael_house = {
-        -- Michael's house (v_int_44). The interior instance sits around here.
-        coords = { x = -802.311, y = 175.056, z = 72.8446 },
+        -- Michael's house (v_int_44 / v_michael). This is the interior's
+        -- placement origin, straight out of the game's MLO data.
+        coords = { x = -807.343, y = 174.981, z = 71.163 },
         label = "Michael's house",
     },
 }

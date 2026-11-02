@@ -11,6 +11,7 @@ local outfits = {}          -- [slot] = outfit, from the server
 local menu = nil            -- { spot = spot, options = { ... } }
 local busy = false
 local markers = false
+local tuning = nil          -- { name = spot } while /housetune is live
 local sessionOutfit = nil   -- what the player was wearing when they arrived
 local lastOutfit = nil      -- last outfit we applied
 local pendingPurchase = nil -- food waiting on the economy's answer
@@ -461,8 +462,57 @@ local function drawHelp(spot)
     EndTextCommandDisplayHelp(0, false, true, -1)
 end
 
+-- ---------------------------------------------------------------------------
+-- Floor snapping
+-- ---------------------------------------------------------------------------
+-- The config coordinates are ped-feet positions taken from the game's own
+-- interior data, but floors are not perfectly flat and a couple of centimetres
+-- of error makes a marker look like it is floating. Every marker is projected
+-- onto the real floor with a short downward probe. Results are cached per spot,
+-- so the cost is one probe per spot per 1.5 s.
+local floorCache = {}
+
+local function snappedZ(spot)
+    local now = GetGameTimer()
+    local cached = floorCache[spot.name]
+
+    if cached and (now - cached.at) < 1500 then return cached.z end
+
+    local z = spot.z
+
+    local ok, hit, hitCoords = pcall(function()
+        local handle = StartExpensiveSynchronousShapeTestLosProbe(
+            spot.x, spot.y, spot.z + 1.5,
+            spot.x, spot.y, spot.z - 3.0,
+            1, PlayerPedId(), 1)
+
+        local _, didHit, endCoords = GetShapeTestResult(handle)
+
+        return didHit == 1, endCoords
+    end)
+
+    if ok and hit and hitCoords and hitCoords.z then
+        z = hitCoords.z
+    end
+
+    floorCache[spot.name] = { z = z, at = now }
+
+    return z
+end
+
+local function roomDebug()
+    local ped = PlayerPedId()
+    local ok, interior, room = pcall(function()
+        return GetInteriorFromEntity(ped), GetRoomKeyFromEntity(ped)
+    end)
+
+    if not ok then return 'interior=?, room=?' end
+
+    return ('interior=%s, room=%s'):format(tostring(interior), tostring(room))
+end
+
 local function drawSpotLabel(spot)
-    local onScreen, x, y = GetScreenCoordFromWorldCoord(spot.x, spot.y, spot.z + 1.25)
+    local onScreen, x, y = GetScreenCoordFromWorldCoord(spot.x, spot.y, snappedZ(spot) + 1.25)
 
     if not onScreen then return end
 
@@ -480,12 +530,14 @@ local function drawMarkers()
     for _, spot in ipairs(spots) do
         -- Marker sits ON the floor at the spot (the coordinates are ped feet),
         -- so what you see is exactly where you have to stand.
-        DrawMarker(1, spot.x, spot.y, spot.z + 0.02,
+        local floor = snappedZ(spot)
+
+        DrawMarker(1, spot.x, spot.y, floor + 0.02,
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
             spot.radius, spot.radius, 0.45, 59, 130, 246, 110,
             false, false, 2, false, nil, nil, false)
 
-        DrawMarker(0, spot.x, spot.y, spot.z + 2.1,
+        DrawMarker(0, spot.x, spot.y, floor + 2.1,
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
             0.25, 0.25, 0.25, 147, 197, 253, 200,
             false, true, 2, false, nil, nil, false)
@@ -552,18 +604,54 @@ CreateThread(function()
     end
 end)
 
+-- /housetune: live marker that follows you until you press E.
+CreateThread(function()
+    while true do
+        local wait = 500
+
+        if tuning then
+            wait = 0
+
+            local ped = PlayerPedId()
+            local coords = GetEntityCoords(ped)
+            local floor = snappedZ({ name = 'tune', x = coords.x, y = coords.y, z = coords.z })
+
+            DrawMarker(1, coords.x, coords.y, floor + 0.02,
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                1.2, 1.2, 0.5, 250, 204, 21, 140,
+                false, false, 2, false, nil, nil, false)
+
+            BeginTextCommandDisplayHelp('STRING')
+            AddTextComponentSubstringPlayerName(('~INPUT_CONTEXT~ save %s here  ·  ~INPUT_FRONTEND_CANCEL~ cancel')
+                :format(tuning.name))
+            EndTextCommandDisplayHelp(0, false, true, -1)
+
+            if IsControlJustPressed(0, Config.Keys.interact) then
+                TriggerServerEvent('fk_house:server:setSpot', tuning.name, coords.x, coords.y, floor)
+                notify(('Saved %s at %.2f, %.2f, %.2f.'):format(tuning.name, coords.x, coords.y, floor))
+                tuning = nil
+            elseif IsControlJustPressed(0, 194) or IsControlJustPressed(0, 322) then
+                notify('Tuning cancelled.')
+                tuning = nil
+            end
+        end
+
+        Wait(wait)
+    end
+end)
+
 CreateThread(function()
     while true do
         local wait = 750
 
-        if not menu and not busy then
+        if not menu and not busy and not tuning then
             local ped = PlayerPedId()
             local coords = GetEntityCoords(ped)
 
             local houseDistance = House.distance(coords, Config.House.coords)
 
             if houseDistance and houseDistance <= (Config.House.radius or 45.0) then
-                local spot = House.nearest(spots, coords)
+                local spot = House.nearest(spots, coords, Config.House.zTolerance)
 
                 if spot then
                     wait = 0
@@ -664,10 +752,14 @@ RegisterCommand('housedebug', function()
     local coords = GetEntityCoords(ped)
     local houseDistance = House.distance(coords, Config.House.coords)
     local inside = houseDistance ~= nil and houseDistance <= (Config.House.radius or 45.0)
+    local tolerance = Config.House.zTolerance or 2.4
 
     notify(('spots=%d | in house=%s (%.1fm of %.0fm) | ui=%s | menu=%s | busy=%s')
         :format(#spots, tostring(inside), houseDistance or -1, Config.House.radius or 45.0,
             tostring(uiReady), menu and menu.spot.name or 'none', tostring(busy)))
+
+    notify(('you: %.2f, %.2f, %.2f | heading %.0f | %s | floor tolerance %.1fm')
+        :format(coords.x, coords.y, coords.z, GetEntityHeading(ped), roomDebug(), tolerance))
 
     if #spots == 0 then
         return notify('No spots received from the server — check the server console for fk_house errors.')
@@ -676,27 +768,60 @@ RegisterCommand('housedebug', function()
     local sorted = {}
 
     for _, spot in ipairs(spots) do
-        sorted[#sorted + 1] = { spot = spot, distance = House.distance(coords, spot) or 9999.0 }
-    end
+        local distance = House.distance(coords, spot)
 
-    for _, spot in ipairs(spots) do
-        if House.distance(coords, spot) == nil then
+        if distance == nil then
             notify(('  %s: coordinates unreadable (%s, %s, %s)')
                 :format(spot.name, tostring(spot.x), tostring(spot.y), tostring(spot.z)))
+        else
+            sorted[#sorted + 1] = { spot = spot, distance = distance, dz = spot.z - coords.z }
         end
     end
 
     table.sort(sorted, function(a, b) return a.distance < b.distance end)
 
-    for index = 1, math.min(#sorted, 4) do
+    for index = 1, math.min(#sorted, 5) do
         local entry = sorted[index]
         local reachable = entry.distance <= entry.spot.radius
+            and math.abs(entry.dz) <= tolerance
 
-        notify(('  %s%s — %.1fm away (radius %.1fm)')
-            :format(reachable and '> ' or '  ', entry.spot.name, entry.distance, entry.spot.radius))
+        notify(('  %s%s — %.1fm away, dz %+.1fm (radius %.1fm)')
+            :format(reachable and '> ' or '  ', entry.spot.name, entry.distance,
+                entry.dz, entry.spot.radius))
     end
 
-    notify('Press E inside a radius to open the menu.')
+    notify('E inside a radius opens the menu · /housemarkers shows the spots · /housescan prints your position.')
+end, false)
+
+--- /housescan — one-line-per-fact report to paste into a message when a spot
+--- is still in the wrong place. Nothing here needs the F8 console.
+RegisterCommand('housescan', function()
+    local ped = PlayerPedId()
+    local coords = GetEntityCoords(ped)
+    local floor = snappedZ({ name = 'scan', x = coords.x, y = coords.y, z = coords.z })
+
+    notify(('SCAN pos=%.3f, %.3f, %.3f floor=%.3f heading=%.1f')
+        :format(coords.x, coords.y, coords.z, floor, GetEntityHeading(ped)))
+    notify(('SCAN %s | house=%.1fm')
+        :format(roomDebug(), House.distance(coords, Config.House.coords) or -1))
+
+    for _, spot in ipairs(spots) do
+        notify(('SCAN %s=%.1fm (dz %+.1f)')
+            :format(spot.name, House.distance(coords, spot) or -1, spot.z - coords.z))
+    end
+end, false)
+
+--- /housetune <spot> — a marker follows you; press E to save that spot there.
+RegisterCommand('housetune', function(_, args)
+    local name = args and args[1]
+
+    if not name then
+        return notify('Usage: /housetune <spot> — walk to the right place, press E to save.')
+    end
+
+    tuning = { name = name:lower() }
+    notify(('Tuning %s — stand where you want the marker, press E to save, BACKSPACE to cancel.')
+        :format(tuning.name))
 end, false)
 
 RegisterCommand('househelp', function()
@@ -707,6 +832,7 @@ RegisterCommand('househelp', function()
         '  Shower — clean up and heal',
         '  Bed — sleep, the clock moves forward',
         '  Living room — relax on the sofa',
-        'Staff: /housespot <name> saves your position, /housespots lists them, /housemarkers shows them.',
+        'Staff: /housespot <name> saves your position, /housetune <name> follows you until you press E,',
+        '       /housemarkers shows every spot, /housedebug and /housescan explain what the script sees.',
     }, '\n'))
 end, false)

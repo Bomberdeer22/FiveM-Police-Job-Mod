@@ -148,18 +148,28 @@ function House.normalizeSpots(entries)
     return spots, errors
 end
 
---- Closest spot within its own radius.
+--- Closest spot within its own radius, on the same floor as you.
+--- Without the floor check a marker upstairs fires while you walk underneath
+--- it: Michael's house has 3.9 m between floors but a 4 m interaction radius.
 --- @param spots table array of normalized spots
 --- @param pos table { x, y, z }
+--- @param zTolerance number|nil max height difference, nil = ignore height
 --- @return table|nil spot, number|nil distance
-function House.nearest(spots, pos)
+function House.nearest(spots, pos, zTolerance)
     local best, bestDistance = nil, nil
+    local _, _, pz = House.readCoords(pos)
 
     for _, spot in ipairs(spots or {}) do
         local distance = House.distance(spot, pos)
 
         if distance and distance <= spot.radius then
-            if not bestDistance or distance < bestDistance then
+            local sameFloor = true
+
+            if pz and type(zTolerance) == 'number' and zTolerance > 0 then
+                sameFloor = math.abs(spot.z - pz) <= zTolerance
+            end
+
+            if sameFloor and (not bestDistance or distance < bestDistance) then
                 best, bestDistance = spot, distance
             end
         end

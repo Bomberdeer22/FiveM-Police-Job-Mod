@@ -178,7 +178,7 @@ police mod can read them, move them, or add its own by adding entries to
 
 ```lua
 local spots = exports.fk_house:GetSpots()          -- array of { name, label, type, x, y, z, radius }
-exports.fk_house:SetSpot('kitchen', { x = -802.3, y = 175.1, z = 72.8 }, 'police_mod')
+exports.fk_house:SetSpot('kitchen', { x = -800.0, y = 185.6, z = 71.85 }, 'police_mod')
 
 -- Personal outfits live server-side, keyed by licence:
 local outfits = exports.fk_house:GetPlayerOutfits('license:110000112345678')
