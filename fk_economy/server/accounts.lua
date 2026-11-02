@@ -8,6 +8,9 @@
     * Every write marks the store dirty; a background thread flushes it to
       data/accounts.json every Config.Persistence.saveInterval seconds, and
       immediately on player drop / resource stop.
+    * Writes go through shared/core.lua, so the previous copy is kept as
+      accounts.bak.json and a rotating snapshot is kept too. A crash mid-write
+      can never leave you with an unreadable file and no way back.
     * Nothing in here is exposed to the client directly — see server/main.lua
       for the validated API.
 ]]
@@ -17,12 +20,16 @@ AccountStore = {}
 local RESOURCE = GetCurrentResourceName()
 
 local store = {
-    accounts = {},   -- [identifier] = { cash, bank, name, firstSeen, lastSeen, earned, spent }
+    accounts = {},   -- [identifier] = { cash, bank, items, name, firstSeen, lastSeen, earned, spent }
     loaded   = false,
     dirty    = false,
+    lastSave = 0,    -- unix time of the last successful write
+    lastError = nil, -- last write failure, for /econstatus
 }
 
 local logLines = nil
+local snapshotSlot = 0
+local lastSnapshot = 0
 
 -- ---------------------------------------------------------------------------
 -- Helpers
@@ -38,18 +45,29 @@ end
 
 --- Read a file from inside the resource, or return nil.
 local function readFile(path)
-    local raw = LoadResourceFile(RESOURCE, path)
-    if not raw or raw == '' then return nil end
-    return raw
+    return Persist.read(path)
 end
 
---- Write a file inside the resource. Returns true on success.
+--- Write a file inside the resource (keeping a .bak of the previous copy).
 local function writeFile(path, contents)
-    local ok = SaveResourceFile(RESOURCE, path, contents, -1)
-    if not ok then
-        print(('^1[fk_economy] Failed to write %s — check resource folder permissions.^0'):format(path))
-    end
-    return ok
+    return Persist.write(path, contents)
+end
+
+--- Keep a rotating snapshot so there is more than one generation to go back to.
+local function maybeSnapshot(contents)
+    local backups = Config.Persistence.backups
+
+    if not backups or backups.enabled == false then return end
+
+    local now = os.time()
+    local every = math.max(60, tonumber(backups.everySeconds) or 300)
+
+    if (now - lastSnapshot) < every then return end
+
+    lastSnapshot = now
+    snapshotSlot = snapshotSlot + 1
+
+    Persist.snapshot(Config.Persistence.file, contents, snapshotSlot, backups.slots or 3)
 end
 
 -- ---------------------------------------------------------------------------
@@ -59,35 +77,35 @@ end
 function AccountStore.load()
     if store.loaded then return true end
 
-    local raw = readFile(Config.Persistence.file)
-    if raw then
-        local ok, decoded = pcall(json.decode, raw)
-        if ok and type(decoded) == 'table' then
-            local accounts = decoded.accounts or decoded
-            if type(accounts) == 'table' then
-                for identifier, account in pairs(accounts) do
-                    if type(identifier) == 'string' and type(account) == 'table' then
-                        store.accounts[identifier] = {
-                            cash      = tonumber(account.cash) or 0,
-                            bank      = tonumber(account.bank) or 0,
-                            name      = account.name,
-                            firstSeen = tonumber(account.firstSeen) or timestamp(),
-                            lastSeen  = tonumber(account.lastSeen) or timestamp(),
-                            earned    = tonumber(account.earned) or 0,
-                            spent     = tonumber(account.spent) or 0,
-                        }
-                    end
+    local decoded, source = Persist.decode(Config.Persistence.file)
+    if decoded then
+        if source and source ~= Config.Persistence.file then
+            print(('^3[fk_economy] %s was unreadable — restored %s instead.^0')
+                :format(Config.Persistence.file, source))
+        end
+
+        local accounts = decoded.accounts or decoded
+        if type(accounts) == 'table' then
+            for identifier, account in pairs(accounts) do
+                if type(identifier) == 'string' and type(account) == 'table' then
+                    store.accounts[identifier] = {
+                        cash      = tonumber(account.cash) or 0,
+                        bank      = tonumber(account.bank) or 0,
+                        items     = AccountStore.sanitizeItems(account.items),
+                        name      = account.name,
+                        firstSeen = tonumber(account.firstSeen) or timestamp(),
+                        lastSeen  = tonumber(account.lastSeen) or timestamp(),
+                        earned    = tonumber(account.earned) or 0,
+                        spent     = tonumber(account.spent) or 0,
+                    }
                 end
-                print(('^2[fk_economy] Loaded %d account(s) from %s^0')
-                    :format((function()
-                        local n = 0
-                        for _ in pairs(store.accounts) do n = n + 1 end
-                        return n
-                    end)(), Config.Persistence.file))
             end
-        else
-            print(('^1[fk_economy] Could not parse %s, starting with an empty store.^0')
-                :format(Config.Persistence.file))
+            print(('^2[fk_economy] Loaded %d account(s) from %s^0')
+                :format((function()
+                    local n = 0
+                    for _ in pairs(store.accounts) do n = n + 1 end
+                    return n
+                end)(), Config.Persistence.file))
         end
     else
         print(('^2[fk_economy] No %s yet — a fresh one will be created on first save.^0')
@@ -102,7 +120,7 @@ function AccountStore.save(force)
     if not force and not store.dirty then return true end
 
     local payload = json.encode({
-        version  = 1,
+        version  = 2,
         savedAt  = isoTime(),
         accounts = store.accounts,
     })
@@ -110,6 +128,11 @@ function AccountStore.save(force)
     local ok = writeFile(Config.Persistence.file, payload)
     if ok then
         store.dirty = false
+        store.lastSave = os.time()
+        store.lastError = nil
+        maybeSnapshot(payload)
+    else
+        store.lastError = 'write failed'
     end
     return ok
 end
@@ -185,7 +208,39 @@ local function newAccount(name)
         lastSeen  = timestamp(),
         earned    = 0,
         spent     = 0,
+        items     = {},
     }
+end
+
+--- Normalise an items table read from disk or built by another resource.
+--- Only known keys, only positive whole counts.
+--- @return table
+function AccountStore.sanitizeItems(items)
+    local out = {}
+
+    if type(items) ~= 'table' then return out end
+
+    for key, quantity in pairs(items) do
+        quantity = tonumber(quantity)
+
+        if type(key) == 'string' and key ~= '' and quantity and quantity > 0 then
+            out[key] = math.floor(quantity)
+        end
+    end
+
+    return out
+end
+
+--- The items table for an account (never nil).
+--- @return table
+function AccountStore.items(account)
+    if type(account) ~= 'table' then return {} end
+
+    if type(account.items) ~= 'table' then
+        account.items = {}
+    end
+
+    return account.items
 end
 
 --- Get (or lazily create) an account by identifier.
@@ -220,6 +275,22 @@ end
 function AccountStore.all()
     AccountStore.load()
     return store.accounts
+end
+
+--- Health snapshot for /econstatus and any monitoring you bolt on.
+--- @return table
+function AccountStore.status()
+    AccountStore.load()
+
+    return {
+        accounts  = AccountStore.count(),
+        dirty     = store.dirty,
+        lastSave  = store.lastSave,
+        lastError = store.lastError,
+        file      = Config.Persistence.file,
+        backup    = Persist.backupPath(Config.Persistence.file),
+        savable   = store.lastSave > 0,
+    }
 end
 
 --- Count of stored accounts (for the server console command).

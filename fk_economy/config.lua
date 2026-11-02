@@ -210,6 +210,17 @@ Config.Limits = {
 
     -- Round balances to whole numbers (set false if you want cents)
     wholeNumbers = true,
+
+    -- Which resources may call the force-a-balance export.
+    -- AddMoney/RemoveMoney are audited and can only move money in the open;
+    -- SetMoney can *invent* it, so it is restricted by default. The console
+    -- and this resource itself are always allowed; add your own resources by
+    -- name (the folder name in your resources dir), e.g. { 'fk_police' }.
+    trustedResources = {},
+
+    -- ACE permission that may also call SetMoney, e.g. 'fk_economy.admin'.
+    -- Leave nil to rely on the list above only.
+    setMoneyAce = nil,
 }
 
 -- ---------------------------------------------------------------------------
@@ -222,6 +233,16 @@ Config.Persistence = {
 
     -- Auto-save interval in seconds (also saves on drop / resource stop)
     saveInterval = 60,
+
+    -- Before every write the previous file is copied to accounts.bak.json, and
+    -- a rotating snapshot (accounts.1.json .. accounts.N.json) is kept so a
+    -- crash or a bad edit can always be rolled back. Nothing here needs a
+    -- database or a directory that does not already exist.
+    backups = {
+        enabled      = true,
+        slots        = 3,    -- accounts.1.json .. accounts.3.json
+        everySeconds = 300,  -- how often a snapshot is rotated in
+    },
 
     -- Optional transaction audit log (set Config.Staff.logTransactions = false
     -- to disable writing)
@@ -236,6 +257,43 @@ Config.Persistence = {
 --       print(('AUDIT %s -> %s %s %s (%s)'):format(actor, target, account, amount, reason))
 --   end
 Config.Log = {}
+
+-- ---------------------------------------------------------------------------
+-- 6b. RATE LIMITS
+--     Net events are cheap to spam from a mod menu. These are token buckets:
+--     `rate` events per second, with a short `burst` allowed on top.
+--     A blocked request is dropped silently and counted in /econstatus.
+-- ---------------------------------------------------------------------------
+Config.RateLimit = {
+    -- Client asking for its own HUD state (fires on spawn + menu open)
+    requestState   = { rate = 2, burst = 20 },
+    -- Staff menu player list (builds a list of every online player)
+    requestPlayers = { rate = 1, burst = 5 },
+    -- Staff give/take actions: people click in bursts, so allow a big burst
+    -- and clamp the sustained rate.
+    staffAction    = { rate = 1, burst = 30 },
+    -- Item purchase (a person buying 30 things at once is not a person)
+    purchase       = { rate = 2, burst = 10 },
+}
+
+-- ---------------------------------------------------------------------------
+-- 6c. ITEMS THE PLAYER OWNS
+--     Buying an item now also stores it on the account (see /items and the
+--     GetItems export), so equipment survives a reconnect and can be taken
+--     away again. Set to false to keep the old "money only" behaviour.
+-- ---------------------------------------------------------------------------
+Config.ItemsOwned = {
+    enabled = true,
+    -- Stack limit per item key
+    maxStack = 99,
+    -- Categories consumed at the till, so they are never stored on the
+    -- account. Everything else (Equipment, Licenses) is kept.
+    skipCategories = {
+        Services    = true,
+        Vehicles    = true,
+        Consumables = true,
+    },
+}
 
 -- ---------------------------------------------------------------------------
 -- 7. ITEM PRICES

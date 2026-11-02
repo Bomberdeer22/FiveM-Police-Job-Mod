@@ -375,6 +375,50 @@ RegisterCommand('mymoney', function(src)
     reply(src, ('Cash: %s   Bank: %s'):format(FormatMoney(money.cash), FormatMoney(money.bank)))
 end, false)
 
+RegisterCommand('items', function(src)
+    if src == 0 then return reply(src, 'Use /items in game.') end
+
+    local items = GetItems(src)
+    local keys = {}
+
+    for key, count in pairs(items) do
+        keys[#keys + 1] = ('%s x%d'):format(Config.Items[key] and Config.Items[key].label or key, count)
+    end
+
+    if #keys == 0 then
+        return reply(src, 'You are not carrying anything yet.')
+    end
+
+    table.sort(keys)
+    reply(src, 'You own: ' .. table.concat(keys, ', '))
+end, false)
+
+--- /econstatus — one line per fact, in chat (no F8 needed) or in the console.
+RegisterCommand('econstatus', function(src)
+    if src ~= 0 and not IsStaff(src) then return deny(src, 'econstatus') end
+
+    local status = AccountStore.status()
+    local version = GetResourceMetadata(GetCurrentResourceName(), 'version', 0) or '?'
+
+    local saved = status.lastSave > 0
+        and ('last save %ds ago'):format(os.time() - status.lastSave)
+        or 'no save yet'
+
+    reply(src, ('v%s | %d account(s) | %s | %s%s')
+        :format(version, status.accounts, saved,
+            status.dirty and 'dirty ' or 'clean',
+            status.lastError and (' | ERROR: ' .. status.lastError) or ''))
+
+    local blocked = 0
+
+    for _, count in pairs(RateLimitStats()) do
+        blocked = blocked + count
+    end
+
+    reply(src, ('rate limit: %d request(s) dropped | file: %s')
+        :format(blocked, status.file))
+end, true)
+
 -- Console / rcon -------------------------------------------------------------
 
 RegisterCommand('eco_save', function(src)

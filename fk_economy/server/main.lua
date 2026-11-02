@@ -16,8 +16,20 @@
         local ok, newBal, err  = exports.fk_economy:TryPurchase(src, 'bodycam', 1, 'cash')
         local prices           = exports.fk_economy:GetPrices()               -- whole item table
 
+    Items (equipment you own, not just money):
+        local items            = exports.fk_economy:GetItems(src)            -- { bodycam = 1 }
+        local count            = exports.fk_economy:GetItemCount(src, 'bodycam')
+        local has              = exports.fk_economy:HasItem(src, 'bodycam')
+        local ok, count, err   = exports.fk_economy:AddItem(src, 'bodycam', 1, 'Evidence room')
+        local ok, count, err   = exports.fk_economy:RemoveItem(src, 'bodycam', 1, 'Confiscated')
+
     Events fired server-side (listen with AddEventHandler):
         'fk_economy:server:moneyChanged' (src, account, delta, newBalance, reason)
+        'fk_economy:server:playerLoaded' (src, identifier)  -- fired once per session
+
+    Statebags (replicated, so any resource or NUI can read them):
+        Player(src).state.money   = { cash = 500, bank = 2500 }
+        Player(src).state.moneyLoaded = true
 ]]
 
 local RESOURCE = GetCurrentResourceName()
@@ -48,6 +60,16 @@ if type(IsStaff) ~= 'function' then
     function StaffVMenuPermissions() return {} end
     function StaffClaimAllowed() return false end
     function StaffRosterFile() return Config.Staff.file or 'data/staff.json' end
+end
+
+-- The vPlayer class owns every balance change. A stale manifest would leave it
+-- out, and then every money call would fail on a nil index — say so loudly.
+if type(VPlayer) ~= 'table' then
+    print('^1==============================================================^0')
+    print('^1[fk_economy] server/player.lua was not loaded!^0')
+    print('^1[fk_economy] Check that fxmanifest.lua lists server/player.lua before^0')
+    print('^1[fk_economy] server/main.lua, and that the file exists.^0')
+    print('^1==============================================================^0')
 end
 
 -- ---------------------------------------------------------------------------
@@ -112,14 +134,52 @@ local function resolveTarget(target)
 end
 
 -- ---------------------------------------------------------------------------
+-- Rate limits
+-- ---------------------------------------------------------------------------
+-- Token buckets from shared/core.lua. A mod menu can fire a net event a few
+-- thousand times a second; these caps make that hill-free.
+
+local limits = {
+    requestState   = RateLimit.new(Config.RateLimit.requestState),
+    requestPlayers = RateLimit.new(Config.RateLimit.requestPlayers),
+    staffAction    = RateLimit.new(Config.RateLimit.staffAction),
+    purchase       = RateLimit.new(Config.RateLimit.purchase),
+}
+
+--- Blocked-request counters, for /econstatus.
+--- @return table { requestState = 0, ... }
+function RateLimitStats()
+    local out = {}
+
+    for name, limiter in pairs(limits) do
+        out[name] = limiter.blocked or 0
+    end
+
+    return out
+end
+
+--- @return boolean allowed
+local function allow(name, src)
+    local limiter = limits[name]
+
+    if not limiter then return true end
+
+    return limiter:allow(src)
+end
+
+-- ---------------------------------------------------------------------------
 -- State sync
 -- ---------------------------------------------------------------------------
 
---- Push the current balances to a player's HUD/menu.
+local loadedPlayers = {}
+
+--- Push the current balances to a player's HUD/menu and to their statebag.
+--- The statebag copy is what other resources subscribe to; the event stays for
+--- the HUD, which also carries the staff flag.
 --- @param src number
 function PushState(src)
     if not src or src < 1 then return end
-    local account = GetPlayerAccount(src)
+    local account, identifier = GetPlayerAccount(src)
     if not account then return end
 
     local balances = {}
@@ -127,12 +187,28 @@ function PushState(src)
         balances[key] = account[key] or 0
     end
 
+    -- Replicated statebag: Player(src).state.money = { cash = , bank = }
+    -- pcall because the native is server-only and the tests run without it.
+    pcall(function()
+        local player = Player(src)
+        if player then
+            player.state:set('money', balances, true)
+            player.state:set('moneyLoaded', true, true)
+        end
+    end)
+
     TriggerClientEvent('fk_economy:client:state', src, {
         balances = balances,
         staff    = IsStaff(src),
         accounts = EnabledAccounts(),
         name     = displayName(src),
+        items    = VPlayer.new(identifier, account):Items(),
     })
+
+    if not loadedPlayers[src] then
+        loadedPlayers[src] = true
+        TriggerEvent('fk_economy:server:playerLoaded', src, identifier)
+    end
 end
 
 -- ---------------------------------------------------------------------------
@@ -146,26 +222,8 @@ local function applyDelta(account, key, delta, reason)
     if not IsValidAccount(key) then return false, 'invalid_account' end
     if type(delta) ~= 'number' or delta ~= delta or delta == 0 then return false, 'invalid_amount' end
 
-    local current = account[key] or 0
-    local newBalance = RoundMoney(current + delta)
-
-    if newBalance < 0 then
-        return false, 'insufficient_funds'
-    end
-
-    if newBalance > Config.Limits.maxBalance then
-        newBalance = Config.Limits.maxBalance
-    end
-
-    account[key] = newBalance
-    if delta > 0 then
-        account.earned = (account.earned or 0) + delta
-    else
-        account.spent = (account.spent or 0) + math.abs(delta)
-    end
-
-    AccountStore.markDirty()
-    return true, newBalance
+    -- The vPlayer class is the single place a balance changes.
+    return VPlayer.new(nil, account):Apply(key, delta, reason)
 end
 
 --- Add money to a player (or an offline identifier).
@@ -221,15 +279,12 @@ function SetMoney(target, account, amount, reason, actor)
     local acc, identifier, name, src = resolveTarget(target)
     if not acc then return false, 'no_target', 'no_target' end
 
-    local newBalance = Clamp(RoundMoney(amount), 0, Config.Limits.maxBalance)
-    local delta = newBalance - (acc[account] or 0)
-    acc[account] = newBalance
-    if delta > 0 then
-        acc.earned = (acc.earned or 0) + delta
-    elseif delta < 0 then
-        acc.spent = (acc.spent or 0) + math.abs(delta)
-    end
-    AccountStore.markDirty()
+    local previous = acc[account] or 0
+    local ok, newBalance = VPlayer.new(identifier, acc):SetBalance(account, amount, reason)
+
+    if not ok then return false, newBalance, newBalance end
+
+    local delta = newBalance - previous
 
     if src then PushState(src) end
     TriggerEvent('fk_economy:server:moneyChanged', src, account, delta, newBalance, reason)
@@ -274,6 +329,8 @@ end
 --- @param reason string|nil
 --- @return boolean ok, number|string newBalanceOrError, string|nil error
 function Purchase(src, item, quantity, account, reason)
+    if src and not allow('purchase', src) then return false, 'rate_limited', 'rate_limited' end
+
     local entry = Config.Items[item]
     if not entry then return false, 'unknown_item', 'unknown_item' end
 
@@ -283,7 +340,101 @@ function Purchase(src, item, quantity, account, reason)
     quantity = math.max(1, math.floor(tonumber(quantity) or 1))
     local total = RoundMoney(price * quantity)
 
-    return RemoveMoney(src, account or 'cash', total, reason or ('purchase:%s x%d'):format(item, quantity))
+    local ok, result, err = RemoveMoney(src, account or 'cash', total,
+        reason or ('purchase:%s x%d'):format(item, quantity))
+
+    if not ok then return ok, result, err end
+
+    -- Equipment and licences are owned; services and consumables are not.
+    if VPlayer.StoresItem(item) then
+        local acc, identifier = GetPlayerAccount(src)
+
+        if acc then
+            local player = VPlayer.new(identifier, acc)
+            player:AddItem(item, quantity)
+            PushState(src)
+            TriggerEvent('fk_economy:server:itemChanged', src, item, player:ItemCount(item), 'purchase')
+        end
+    end
+
+    return ok, result
+end
+
+-- ---------------------------------------------------------------------------
+-- Items
+-- ---------------------------------------------------------------------------
+
+--- Everything a player owns, keyed by item.
+--- @return table
+function GetItems(src)
+    local acc = GetPlayerAccount(src)
+    if not acc then return {} end
+
+    local items = AccountStore.items(acc)
+    local out = {}
+
+    for key, quantity in pairs(items) do out[key] = quantity end
+
+    return out
+end
+
+--- @return number count
+function GetItemCount(src, item)
+    local acc = GetPlayerAccount(src)
+    if not acc or type(item) ~= 'string' then return 0 end
+
+    return AccountStore.items(acc)[item] or 0
+end
+
+--- @return boolean
+function HasItem(src, item, quantity)
+    return GetItemCount(src, item) >= math.max(1, math.floor(tonumber(quantity) or 1))
+end
+
+--- Give an item. Used by purchases, the evidence room, staff corrections…
+--- @return boolean ok, number|string countOrError, string|nil error
+function AddItem(target, item, quantity, reason, actor)
+    local acc, identifier, name, src = resolveTarget(target)
+
+    if not acc then return false, 'no_target', 'no_target' end
+    if type(item) ~= 'string' or item == '' then return false, 'invalid_item', 'invalid_item' end
+
+    local ok, result = VPlayer.new(identifier, acc):AddItem(item, quantity)
+
+    if not ok then return false, result, result end
+
+    if src then
+        PushState(src)
+        TriggerEvent('fk_economy:server:itemChanged', src, item, result, reason or 'add')
+    end
+
+    AccountStore.log(actor or 'system', name or identifier, 'item:' .. item,
+        tonumber(quantity) or 1, reason or 'add')
+
+    return true, result
+end
+
+--- Take an item away (confiscation, consumption, staff corrections).
+--- @return boolean ok, number|string countOrError, string|nil error
+function RemoveItem(target, item, quantity, reason, actor)
+    local acc, identifier, name, src = resolveTarget(target)
+
+    if not acc then return false, 'no_target', 'no_target' end
+    if type(item) ~= 'string' or item == '' then return false, 'invalid_item', 'invalid_item' end
+
+    local ok, result = VPlayer.new(identifier, acc):RemoveItem(item, quantity)
+
+    if not ok then return false, result, result end
+
+    if src then
+        PushState(src)
+        TriggerEvent('fk_economy:server:itemChanged', src, item, result, reason or 'remove')
+    end
+
+    AccountStore.log(actor or 'system', name or identifier, 'item:' .. item,
+        -(tonumber(quantity) or 1), reason or 'remove')
+
+    return true, result
 end
 
 -- ---------------------------------------------------------------------------
@@ -292,16 +443,57 @@ end
 
 exports('GetMoney', GetMoney)
 exports('GetBalance', GetBalance)
+--- Who is calling? nil for the console / this resource.
+--- @return string|nil
+local function callingResource()
+    local ok, resource = pcall(GetInvokingResource)
+    if not ok or resource == nil or resource == '' then return nil end
+    return resource
+end
+
+--- May the calling resource force a balance?
+--- SetMoney can invent money, so it is restricted: trusted list first, then an
+--- optional ACE (checked against the resource principal).
+--- @return boolean
+local function callerMaySetMoney()
+    local resource = callingResource()
+
+    if not resource or resource == RESOURCE then return true end
+
+    for _, name in ipairs(Config.Limits.trustedResources or {}) do
+        if name == resource then return true end
+    end
+
+    local ace = Config.Limits.setMoneyAce
+
+    if ace then
+        local ok, allowed = pcall(IsPrincipalAceAllowed, 'resource.' .. resource, ace)
+        if ok and allowed then return true end
+    end
+
+    print(('^3[fk_economy] %s tried to call SetMoney and was refused.^0')
+        :format(resource))
+
+    return false
+end
+
 exports('AddMoney', function(target, account, amount, reason)
-    local ok, result = AddMoney(target, account, amount, reason, 'export')
+    local ok, result = AddMoney(target, account, amount, reason,
+        'export:' .. tostring(callingResource() or 'console'))
     return ok, result
 end)
 exports('RemoveMoney', function(target, account, amount, reason)
-    local ok, result = RemoveMoney(target, account, amount, reason, 'export')
+    local ok, result = RemoveMoney(target, account, amount, reason,
+        'export:' .. tostring(callingResource() or 'console'))
     return ok, result
 end)
 exports('SetMoney', function(target, account, amount, reason)
-    local ok, result = SetMoney(target, account, amount, reason, 'export')
+    if not callerMaySetMoney() then
+        return false, 'not_permitted', 'not_permitted'
+    end
+
+    local ok, result = SetMoney(target, account, amount, reason,
+        'export:' .. tostring(callingResource() or 'console'))
     return ok, result
 end)
 exports('CanAfford', function(src, item, quantity, account)
@@ -342,6 +534,28 @@ end)
 exports('GetStaffRoster', function()
     return StaffList()
 end)
+exports('GetItems', function(src)
+    return GetItems(src)
+end)
+exports('GetItemCount', function(src, item)
+    return GetItemCount(src, item)
+end)
+exports('HasItem', function(src, item, quantity)
+    return HasItem(src, item, quantity)
+end)
+exports('AddItem', function(target, item, quantity, reason)
+    local ok, result = AddItem(target, item, quantity, reason,
+        'export:' .. tostring(callingResource() or 'console'))
+    return ok, result
+end)
+exports('RemoveItem', function(target, item, quantity, reason)
+    local ok, result = RemoveItem(target, item, quantity, reason,
+        'export:' .. tostring(callingResource() or 'console'))
+    return ok, result
+end)
+exports('IsItemOwnable', function(item)
+    return VPlayer.StoresItem(item)
+end)
 exports('GetAccountStats', function(src)
     local acc = GetPlayerAccount(src)
     if not acc then return nil end
@@ -363,6 +577,8 @@ end)
 RegisterNetEvent('fk_economy:server:requestState', function()
     local src = tonumber(source)
     if not src or src < 1 then return end
+    if not allow('requestState', src) then return end
+
     PushState(src)
 end)
 
@@ -371,6 +587,7 @@ RegisterNetEvent('fk_economy:server:requestPlayers', function()
     local src = tonumber(source)
     if not src or src < 1 then return end
     if not IsStaff(src) then return end
+    if not allow('requestPlayers', src) then return end
 
     local players = {}
     for _, id in ipairs(GetPlayers()) do
@@ -403,6 +620,9 @@ end)
 RegisterNetEvent('fk_economy:server:staffAction', function(payload)
     local src = tonumber(source)
     if not src or src < 1 then return end
+
+    -- Silently drop a flood: a real staff member clicks, they do not spam.
+    if not allow('staffAction', src) then return end
 
     local function fail(message)
         TriggerClientEvent('fk_economy:client:staffResult', src, { ok = false, message = message })
@@ -491,6 +711,12 @@ local lastDropSave = 0
 AddEventHandler('playerDropped', function()
     local src = tonumber(source)
     if not src or src < 1 then return end
+
+    loadedPlayers[src] = nil
+
+    for _, limiter in pairs(limits) do
+        limiter:reset(src)
+    end
 
     local account = GetPlayerAccount(src)
     if account then

@@ -10,17 +10,30 @@ const ROOT = path.join(__dirname, '..', 'fk_economy');
 const FILES = [
   'config.lua',
   'shared/utils.lua',
+  'shared/core.lua',
   'server/accounts.lua',
+  'server/player.lua',
   'server/staff.lua',
   'server/main.lua',
   'server/commands.lua',
 ];
 
+/** Render a JS value as a Lua literal, for small config tweaks in a test. */
+function luaLiteral(value) {
+  if (value === null || value === undefined) return 'nil';
+  if (typeof value === 'string') return JSON.stringify(value);
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (Array.isArray(value)) return '{' + value.map(luaLiteral).join(', ') + '}';
+  return 'nil';
+}
+
 function createHarness(options = {}) {
   const L = lauxlib.luaL_newstate();
   lualib.luaL_openlibs(L);
 
-  const captured = { client: [], server: [], chat: [], logs: [], saves: {} };
+  const captured = { client: [], server: [], chat: [], logs: [], saves: {}, statebags: [] };
+  let clock = 0;
+  let invokingResource = null;
   const playerList = options.players || [];
   const filesystem = options.files || {};
   const settings = options.settings || {};
@@ -228,6 +241,50 @@ function createHarness(options = {}) {
     return 0;
   });
 
+  // Replicated statebags: Player(src).state:set(key, value, replicated)
+  setGlobal('Player', () => {
+    const src = Math.trunc(lua.lua_tonumber(L, 1));
+    lua.lua_createtable(L, 0, 1);
+    lua.lua_createtable(L, 0, 1);
+    lua.lua_pushcfunction(L, (Ls) => {
+      const key = to_jsstring(lua.lua_tostring(Ls, 2));
+      captured.statebags.push({
+        src,
+        key,
+        value: luaToJs(3),
+        replicated: lua.lua_toboolean(Ls, 4),
+      });
+      return 0;
+    });
+    lua.lua_setfield(L, -2, to_luastring('set'));
+    lua.lua_setfield(L, -2, to_luastring('state'));
+    return 1;
+  });
+
+  // Which resource is calling an export (nil = console / this resource).
+  setGlobal('GetInvokingResource', () => {
+    if (invokingResource === null || invokingResource === undefined) lua.lua_pushnil(L);
+    else lua.lua_pushstring(L, to_luastring(invokingResource));
+    return 1;
+  });
+
+  setGlobal('IsPrincipalAceAllowed', (Ls) => {
+    const ace = to_jsstring(lua.lua_tostring(Ls, 2));
+    lua.lua_pushboolean(L, (settings.principalAces || []).includes(ace));
+    return 1;
+  });
+
+  setGlobal('GetResourceMetadata', () => {
+    lua.lua_pushstring(L, to_luastring(options.version || '0.3.0'));
+    return 1;
+  });
+
+  // Deterministic clock for the rate limiter (it refills over time).
+  setGlobal('GetGameTimer', () => {
+    lua.lua_pushnumber(L, clock);
+    return 1;
+  });
+
   setGlobal('exports', (Ls) => {
     const name = to_jsstring(lua.lua_tostring(Ls, 1));
     exportRefs[name] = reg();
@@ -322,7 +379,20 @@ function createHarness(options = {}) {
     return callRef(commands[name], [src, args]);
   }
 
-  return { captured, fireNet, fireServerEvent, callExport, runCommand, filesystem, playerList };
+  return {
+    captured,
+    fireNet,
+    fireServerEvent,
+    callExport,
+    runCommand,
+    filesystem,
+    playerList,
+    advance(ms) { clock += Number(ms) || 0; },
+    setInvokingResource(name) { invokingResource = name === undefined ? null : name; },
+    setConfig(pathName, value) {
+      runLua(`Config.${pathName} = ${luaLiteral(value)}`, 'setConfig');
+    },
+  };
 }
 
 /* ------------------------------- assertions ------------------------------- */
@@ -665,6 +735,160 @@ check('HUD state still pushed without the staff module', !!brokenState && broken
 
 const guardLog = broken.captured.logs.join('\n');
 check('missing staff module is reported loudly', /server\/staff\.lua was not loaded/.test(guardLog), guardLog.split('\n').slice(0, 4));
+
+// -- items you own ----------------------------------------------------------
+// A fresh account so the starting balance is the one from config.lua.
+const shop = createHarness({ players });
+
+let [bought, afterBuy] = shop.callExport('TryPurchase', 1, 'bodycam', 1, 'cash');
+check('buying equipment charges the account', bought === true && afterBuy === 500, [bought, afterBuy]);
+
+let [owned] = shop.callExport('GetItems', 1);
+check('the equipment is stored on the account', owned && owned.bodycam === 1, owned);
+
+let [itemCount] = shop.callExport('GetItemCount', 1, 'bodycam');
+check('GetItemCount agrees', itemCount === 1, itemCount);
+
+const [hasCam] = shop.callExport('HasItem', 1, 'bodycam');
+check('HasItem is true for something owned', hasCam === true, hasCam);
+
+const [hasRadio] = shop.callExport('HasItem', 1, 'radio');
+check('HasItem is false for something not owned', hasRadio === false, hasRadio);
+
+[bought] = shop.callExport('TryPurchase', 1, 'coffee', 1, 'cash');
+const [afterCoffee] = shop.callExport('GetItems', 1);
+check('consumables are never stored on the account',
+  bought === true && afterCoffee.coffee === undefined, afterCoffee);
+
+const [added, addedCount] = shop.callExport('AddItem', 1, 'radio', 2, 'Evidence room');
+check('AddItem gives an item', added === true && addedCount === 2, [added, addedCount]);
+
+const [tooMany, refused] = shop.callExport('RemoveItem', 1, 'radio', 3, 'Confiscated');
+check('RemoveItem refuses to take more than is owned', tooMany === false && refused === 'not_owned', [tooMany, refused]);
+
+const [removed] = shop.callExport('RemoveItem', 1, 'radio', 2, 'Confiscated');
+const [afterRemove] = shop.callExport('GetItems', 1);
+check('RemoveItem takes the item away', removed === true && afterRemove.radio === undefined, afterRemove);
+
+const [, stacked] = shop.callExport('AddItem', 1, 'bodycam', 500, 'Stress test');
+check('items respect the stack limit', stacked === 99, stacked);
+
+const [ownable] = shop.callExport('IsItemOwnable', 'bodycam');
+const [notOwnable] = shop.callExport('IsItemOwnable', 'vehicle_cruiser');
+check('equipment is ownable, vehicles are not', ownable === true && notOwnable === false, [ownable, notOwnable]);
+
+shop.runCommand('eco_save', 0, []);
+const accountsRaw = shop.filesystem['data/accounts.json'];
+check('owned items are written to accounts.json',
+  typeof accountsRaw === 'string' && accountsRaw.indexOf('bodycam') !== -1,
+  typeof accountsRaw === 'string' ? accountsRaw.slice(0, 120) : accountsRaw);
+
+const [savedAccount] = shop.callExport('GetItems', 1);
+check('the item table survives the round trip', savedAccount.bodycam === 99, savedAccount);
+
+// -- statebags --------------------------------------------------------------
+const moneyBag = shop.captured.statebags.filter((bag) => bag.key === 'money').pop();
+check('balances are replicated to the money statebag',
+  !!moneyBag && moneyBag.replicated === true && typeof moneyBag.value.cash === 'number', moneyBag);
+check('the statebag follows the real balance', !!moneyBag && moneyBag.value.cash === 495, moneyBag && moneyBag.value);
+
+const loadedBag = shop.captured.statebags.filter((bag) => bag.key === 'moneyLoaded').pop();
+check('moneyLoaded is set once the account exists', !!loadedBag && loadedBag.value === true, loadedBag);
+
+const playerLoaded = shop.captured.server.filter((event) => event.name === 'fk_economy:server:playerLoaded');
+check('playerLoaded fires once per session', playerLoaded.length === 1, playerLoaded.length);
+check('playerLoaded carries the identifier',
+  playerLoaded.length === 1 && playerLoaded[0].args[1] === 'license:aaa',
+  playerLoaded[0] && playerLoaded[0].args);
+
+// -- crash safety -----------------------------------------------------------
+shop.callExport('AddMoney', 1, 'bank', 1, 'Save trigger');
+shop.runCommand('eco_save', 0, []);
+
+check('the previous accounts.json is kept as a .bak',
+  typeof shop.filesystem['data/accounts.bak.json'] === 'string', Object.keys(shop.filesystem));
+
+check('a rotating snapshot is kept as well',
+  typeof shop.filesystem['data/accounts.1.json'] === 'string', Object.keys(shop.filesystem));
+
+const recovered = createHarness({
+  players,
+  files: {
+    'data/accounts.json': '{ this is not json, it is a half written file',
+    'data/accounts.bak.json': JSON.stringify({
+      version: 2,
+      accounts: {
+        'license:aaa': { cash: 1234, bank: 5000, items: { radio: 2 }, name: 'Alice' },
+      },
+    }),
+  },
+});
+
+const [recoveredCash] = recovered.callExport('GetBalance', 1, 'cash');
+check('a corrupt accounts.json falls back to the backup', recoveredCash === 1234, recoveredCash);
+
+const [recoveredItems] = recovered.callExport('GetItems', 1);
+check('items come back from the backup too', recoveredItems.radio === 2, recoveredItems);
+
+// -- rate limiting ----------------------------------------------------------
+const flood = createHarness({ players });
+for (let i = 0; i < 60; i += 1) {
+  flood.fireNet('fk_economy:server:staffAction', 3, { mode: 'add', account: 'cash', amount: 1, target: 1 });
+}
+const answered = flood.captured.client.filter((event) => event.name === 'fk_economy:client:staffResult').length;
+check('a staff action flood is cut off by the rate limit', answered > 0 && answered <= 30, answered);
+
+flood.advance(60000);
+flood.captured.client.length = 0;
+flood.fireNet('fk_economy:server:staffAction', 3, { mode: 'add', account: 'cash', amount: 1, target: 1 });
+check('the limiter refills over time',
+  flood.captured.client.some((event) => event.name === 'fk_economy:client:staffResult'));
+
+const floodState = createHarness({ players });
+for (let i = 0; i < 40; i += 1) floodState.fireNet('fk_economy:server:requestState', 1);
+check('state requests are rate limited too',
+  floodState.captured.client.filter((event) => event.name === 'fk_economy:client:state').length <= 20,
+  floodState.captured.client.length);
+
+// -- the SetMoney gate ------------------------------------------------------
+const gate = createHarness({ players, settings: { principalAces: ['fk_economy.admin'] } });
+
+gate.setInvokingResource('sketchy_menu');
+const [gatedOk, gatedError] = gate.callExport('SetMoney', 1, 'cash', 999999, 'free money');
+check('SetMoney refuses an untrusted resource', gatedOk === false && gatedError === 'not_permitted', [gatedOk, gatedError]);
+
+const [gatedBalance] = gate.callExport('GetBalance', 1, 'cash');
+check('the refused call changed nothing', gatedBalance === 750, gatedBalance);
+
+gate.setInvokingResource(null);
+const [consoleOk, consoleBalance] = gate.callExport('SetMoney', 1, 'cash', 999, 'console correction');
+check('SetMoney still works from the console', consoleOk === true && consoleBalance === 999, [consoleOk, consoleBalance]);
+
+gate.setConfig('Limits.trustedResources', ['fk_police']);
+gate.setInvokingResource('fk_police');
+const [trustedOk] = gate.callExport('SetMoney', 1, 'cash', 1500, 'payroll');
+check('a trusted resource may set a balance', trustedOk === true, trustedOk);
+
+gate.setConfig('Limits.setMoneyAce', 'fk_economy.admin');
+gate.setInvokingResource('fk_other');
+const [aceOk] = gate.callExport('SetMoney', 1, 'cash', 2000, 'ace');
+check('an admin ACE works for other resources', aceOk === true, aceOk);
+
+const [auditLog] = [gate.filesystem['data/transactions.log']];
+check('refused and allowed calls are traceable in the audit log',
+  typeof auditLog === 'string' && auditLog.indexOf('export:fk_police') !== -1, auditLog);
+
+// -- diagnostics ------------------------------------------------------------
+shop.captured.client.length = 0;
+shop.runCommand('econstatus', 3, []);
+const statusChat = JSON.stringify(shop.captured.client.filter((event) => event.name === 'chat:addMessage'));
+check('/econstatus reports the store to staff',
+  statusChat.indexOf('account(s)') !== -1 && statusChat.indexOf('rate limit') !== -1, statusChat.slice(0, 200));
+
+shop.captured.client.length = 0;
+shop.runCommand('items', 1, []);
+const itemsChat = JSON.stringify(shop.captured.client.filter((event) => event.name === 'chat:addMessage'));
+check('/items lists what the player owns', itemsChat.indexOf('Body Camera') !== -1, itemsChat.slice(0, 200));
 
 console.log(`\n${pass}/${pass + failures.length} checks passed`);
 if (failures.length) {
