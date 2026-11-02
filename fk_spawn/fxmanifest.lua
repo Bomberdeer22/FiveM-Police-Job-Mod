@@ -1,0 +1,24 @@
+fx_version 'cerulean'
+game 'gta5'
+lua54 'yes'
+
+name 'fk_spawn'
+author 'FiveM Police Job Mod'
+description 'Spawn manager: players wake up in Michael De Santa\'s bedroom. Staff can move the spawn point in game.'
+version '0.2.0'
+
+shared_scripts {
+    'config.lua',
+    'shared/core.lua',
+    'shared/spawns.lua',
+}
+
+server_scripts {
+    'server/main.lua',
+}
+
+client_scripts {
+    'client/main.lua',
+}
+
+dependencies {}
