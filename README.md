@@ -460,6 +460,30 @@ appears is it cleaned up and you get a chat line (at most once every 15 s). Whil
 pending, further requests reuse it rather than creating a second one, so you never end up
 with a stack of cars in the garage.
 
+#### Surviving a restart
+
+The car is written to disk when you park it, and read back **when the resource starts** —
+so a server restart, `restart fk_house` or a full machine reboot cannot lose it:
+
+* `fk_house/data/garage.json` is the current file.
+* `fk_house/data/garage.bak.json` is the copy from just before the last write, so a write
+  that was cut short still leaves the previous version.
+* `fk_house/data/garage.1.json` … `.3.json` are rotating generations
+  (`Config.Persistence.backups.slots`), written round-robin. If the file *and* the `.bak`
+  are unreadable, startup restores the newest generation by its `savedAt` stamp and writes
+  it back to `garage.json`, so the next restart is clean again.
+* `onResourceStop` flushes the garage, so a car parked seconds before a restart is saved
+  even if the process is stopped immediately afterwards.
+
+On join, the server sends the stored car and the client says so in chat — no F8 needed:
+
+```
+Your adder is saved on the server (2026-11-02 14:03 UTC). Walk up to the garage to bring it out.
+```
+
+`/mycar` prints the same stamp. Walking up to the garage brings the car out; if you are
+already near the house it is brought out automatically.
+
 ### Configuration
 
 | Key | Default | What it does |
@@ -480,6 +504,7 @@ with a stack of cars in the garage.
 | `Config.Garage.respawn` / `respawnDelay` | `true` / `5000` | Re-create the car in the garage if the entity ever disappears |
 | `Config.Garage.blockedModels` | `{}` | Model names that may not be stored (matched by hash, so a fake name does not help) |
 | `Config.Garage.door` | `prop_ld_garaged_01` | The garage door and how close you must be for it to open; `enabled = false` if another resource drives it |
+| `Config.Persistence.backups` | `{ slots = 3 }` | How many rotating generations of `garage.json` to keep (used when the main file and its `.bak` are unreadable) |
 
 Adding your own spot: copy an entry in `Config.Spots`, give it a `name`, a `type`
 (`wardrobe`, `kitchen`, `shower`, `bed`, `sofa`, `garage`) and coordinates, then `/housespot <name>`
@@ -492,6 +517,7 @@ in game to fine-tune it.
 | `fk_house/data/spots.json` | Positions saved with `/housespot` (git-ignored) |
 | `fk_house/data/outfits.json` | Every player's saved outfits, keyed by `license:` (git-ignored) |
 | `fk_house/data/garage.json` | Each player's saved car: model, hash, plate, position, heading (git-ignored) |
+| `fk_house/data/garage.bak.json`, `garage.1.json` … `garage.3.json` | Previous copies of the above, used when the main file is unreadable (git-ignored) |
 
 ---
 
@@ -588,7 +614,7 @@ Consumables, services and vehicles are *not* stored (they are used at the till);
 
 `.github/workflows/tests.yml` runs `npm run check` on every push and pull request: it
 compiles all 25 Lua files with fengari (`tools/lint-lua.js`), then runs the five test
-suites (365 checks) against a real Lua VM and jsdom.
+suites (377 checks) against a real Lua VM and jsdom.
 
 ---
 
@@ -615,7 +641,7 @@ with mocked FiveM natives, and the NUI page runs in jsdom.
 
 ```bash
 npm install
-npm run check   # lint every Lua file + all 365 checks
+npm run check   # lint every Lua file + all 377 checks
 ```
 
 * **123 economy checks** — starting balances, overdraft refusal, invalid
@@ -634,15 +660,18 @@ npm run check   # lint every Lua file + all 365 checks
   preset saving, staff selection, give/take confirmation, toasts, price list,
   delta pills, hidden-HUD behaviour.
 * **14 preview checks** — the `preview/` harness boots and drives the same UI.
-* **140 house checks** — the six spots and their types, coordinates checked against
+* **152 house checks** — the six spots and their types, coordinates checked against
   the game's own interior data (each spot must land in its room and on its floor),
   floor-aware nearest-spot lookup, 3D distance, spot validation, `/housespot` / `house_spot` / `house_reset`, staff gating,
   `spots.json` persistence across a restart, outfit validation and per-licence storage,
   kitchen purchases through the economy (success, refusal, unknown item, no economy),
   unsigned model-hash handling (a negative stored hash still spawns the same car), the
   slow-registration regression (a car that is not there yet is not "failed", is announced
-  when it appears, and is never created twice), and the NUI card in jsdom (rows, hints,
-  show/hide, Lua messages).
+  when it appears, and is never created twice), restart safety (the car is still there
+  from the main file, from a `.bak`, from a single rotating snapshot, and from the newest
+  of several; a corrupt file plus corrupt backup still recovers; `onResourceStop` flushes
+  the garage and ignores another resource stopping), and the NUI card in jsdom (rows,
+  hints, show/hide, Lua messages).
 * **55 spawn checks** — the bedroom point and its interior, name lookup (case/space
   insensitive), coordinate parsing from strings and tables, bounds/NaN rejection,
   save/load of `spawns.json`, `spawn_set` / `spawn_reset` / `spawnlist`, the staff
@@ -666,6 +695,7 @@ npm run check   # lint every Lua file + all 365 checks
 | **Player does not wake up in the bedroom on join** | Everything needed is visible **in chat**: on a successful join you get `Waking you up in Michael's bedroom…`; `/spawnstatus` prints the resource version, the points it received, the pending flag and your coordinates. `/spawn` forces a spawn (if that works, the spawn logic is fine and only the join trigger is at fault). On the **server** console look for `[fk_spawn] Ready (v…)`, `Player N (name) spawned at michael_bedroom`, and `player N never confirmed the join spawn` (means the client never acknowledged — check that the player's client has the same `fk_spawn` version). No `Ready` line at all = the resource is not running: `ensure fk_spawn` after `ensure fk_economy`. |
 | **No prompt inside the house** | Run `/housedebug` first — it prints, in chat: how many spots the client received, whether you are inside the house radius, which spots are near you (and within what radius), whether the UI page answered, and whether a menu is open. Then `/housemarkers` (staff) draws a marker **on the floor** at every spot, and `/housespot <name>` saves your position. If `/housedebug` says `spots=0`, the client never got the list — check the server console. |
 | **Chat: the car "could not be spawned" — but the car is right there, and a new one keeps appearing** | Fixed in v0.3.1: a server-created vehicle is not registered on the tick it is made, so the old check called that a failure and the next request made another car. Update `fk_house` and `restart fk_house`. If it still happens, the server console prints `[fk_house] gave up spawning <model>` with the reason. |
+| **"My car was gone after a restart"** | It should not be: the record is read from `fk_house/data/garage.json` at resource start, with `garage.bak.json` and `garage.1..3.json` as fallbacks. Check the server console at startup — it prints `N saved vehicle(s) loaded from data/garage.json`, or a yellow line naming the backup it restored from. If it says `0`, the file is empty or `data/` is not writable (see the `Could not write` row below). `/mycar` shows the exact save time. |
 | **My car did not come back** | `/mycar` in chat prints what is stored and where the car is. If the record is empty, the car was never parked inside `Config.Garage.coords`/`radius` — drive it in, get out, and look for the "Parked your …" line. The console `garage_list` command lists every stored car. | Every default coordinate was measured from the interior's own MLO data — [`docs/COORDINATES.md`](docs/COORDINATES.md) lists the props each one is anchored to and the maths behind it. If your build differs, `/housescan` prints your position, floor height, interior id and room hash in chat, and `/housetune <spot>` saves a spot without editing files. |
 | **`Could not write data/…json`** | `SaveResourceFile` cannot create folders: the resource needs a `data` directory next to `fxmanifest.lua`. Every resource ships one with a `.gitkeep`; if you copied files by hand, create `fk_house/data` (and `fk_spawn/data`) yourself and restart. |
 | **Nothing happens when I press E** | Check the spot's `type` in `config.lua` — only `wardrobe`, `kitchen`, `shower`, `bed` and `sofa` have actions. The card should list at least one option; if the spot has no options you get "Nothing to do here yet." |

@@ -20,6 +20,10 @@ local FILE = (Config.Garage and Config.Garage.file) or 'data/garage.json'
 local stored = {} -- [identifier] = { model, plate, x, y, z, w, savedAt }
 local live = {}   -- [source] = { entity, netId, identifier, nextTry }
 
+local save       -- forward declaration: load() writes a rescued file back
+local loaded = false
+local snapshotSlot = 0 -- rotating generation for data/garage.<n>.json
+
 -- ---------------------------------------------------------------------------
 -- Helpers
 -- ---------------------------------------------------------------------------
@@ -54,6 +58,13 @@ end
 
 local function garageConfig()
     return Config.Garage or {}
+end
+
+--- How many rotating generations to keep (Config.Persistence.backups.slots).
+local function backupSlots()
+    local backups = (Config.Persistence or {}).backups or {}
+
+    return math.max(1, math.floor(tonumber(backups.slots) or 3))
 end
 
 local function insideGarage(coords)
@@ -118,20 +129,20 @@ end
 -- Persistence
 -- ---------------------------------------------------------------------------
 
+--- Read every saved car back from disk. This runs once at resource start, so
+--- it is what makes a car survive a server restart.
 local function load()
     stored = {}
 
-    local data, source = Persist.decode(FILE)
+    local data, source = Persist.decodeAny(FILE, backupSlots())
 
     if not data then
         if Persist.read(FILE) then
             errorf(('%s is not valid JSON, starting with an empty garage.'):format(FILE))
         end
-        return
-    end
 
-    if source and source ~= FILE then
-        warn(('%s was unreadable — restored %s instead.'):format(FILE, source))
+        loaded = true
+        return
     end
 
     for identifier, entry in pairs(data.vehicles or {}) do
@@ -143,9 +154,32 @@ local function load()
             warn(('Skipped a saved vehicle for %s.'):format(tostring(identifier)))
         end
     end
+
+    local count = 0
+
+    for _ in pairs(stored) do count = count + 1 end
+
+    if source and source ~= FILE then
+        warn(('%s was unreadable — restored %d vehicle(s) from %s.')
+            :format(FILE, count, source))
+    else
+        log(('%d saved vehicle(s) loaded from %s'):format(count, FILE))
+    end
+
+    loaded = true
+
+    -- Continue the rotation after the newest generation that already exists,
+    -- instead of restarting at slot 1 and overwriting the freshest backup.
+    for slot = 1, backupSlots() do
+        if Persist.read(Persist.slotPath(FILE, slot)) then snapshotSlot = slot end
+    end
+
+    -- Put the rescued copy back where it belongs, so the next restart reads the
+    -- main file again instead of needing the backup.
+    if source and source ~= FILE then save() end
 end
 
-local function save()
+save = function()
     local count = 0
 
     for _ in pairs(stored) do count = count + 1 end
@@ -165,12 +199,27 @@ local function save()
         return false
     end
 
+    -- Older generations, so a crash mid-write (or a corrupted file) still leaves
+    -- something to restore from. Written round-robin; load() picks the newest.
+    local slots = backupSlots()
+
+    snapshotSlot = (snapshotSlot % slots) + 1
+    Persist.snapshot(FILE, encoded, snapshotSlot, slots)
+
     if Config.Debug then
         log(('saved %d vehicle(s)'):format(count))
     end
 
     return true
 end
+
+--- Write the garage to disk when the resource stops (restart, `ensure`, server
+--- shutdown), so a car parked seconds earlier is not lost with the process.
+AddEventHandler('onResourceStop', function(resource)
+    if resource ~= RESOURCE or not loaded then return end
+
+    save()
+end)
 
 -- ---------------------------------------------------------------------------
 -- Live vehicles

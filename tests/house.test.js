@@ -515,6 +515,10 @@ function createHarness(options = {}) {
       if (exportsMap[name] === undefined) throw new Error(`no export "${name}"`);
       return callRef(exportsMap[name], Array.isArray(args) ? args : [args]);
     },
+    fireEvent(name, args = []) {
+      if (events[name] === undefined) throw new Error(`no event "${name}"`);
+      return callRef(events[name], args);
+    },
     fireNet(name, source, args = []) {
       if (handlers[name] === undefined) throw new Error(`no net event "${name}"`);
       setGlobalValue('source', source);
@@ -1331,6 +1335,110 @@ const reused = slow.captured.client
 check('a third request reuses the car instead of creating one',
   !!reused && slow.vehicleCalls.created.length === 1,
   { created: slow.vehicleCalls.created.length, reused: reused && reused.args[0] });
+
+// ---------------------------------------------------------------------------
+// A restart must remember the car: rotating generations, rescue, flush on stop
+// ---------------------------------------------------------------------------
+
+const restartPark = createHarness();
+const restartCar = restartPark.makeVehicle({ model: 'adder', x: -811.3, y: 187.5, z: 71.6 });
+restartPark.fireNet('fk_house:server:garage:park', 1, [restartCar.netId, 'adder', 'FK 1']);
+
+const snapshotRaw = restartPark.filesystem['data/garage.1.json'];
+check('parking writes a rotating generation as well as the file',
+  !!snapshotRaw && JSON.parse(snapshotRaw).vehicles['license:test1'].model === 'adder',
+  Object.keys(restartPark.filesystem));
+
+const secondCar = restartPark.makeVehicle({ model: 'sultan', x: -811.0, y: 187.9, z: 71.6 });
+restartPark.fireNet('fk_house:server:garage:park', 1, [secondCar.netId, 'sultan', 'FK 2']);
+check('each save goes to the next slot, so an older car is never overwritten',
+  !!restartPark.filesystem['data/garage.1.json'] && !!restartPark.filesystem['data/garage.2.json'],
+  Object.keys(restartPark.filesystem).filter((name) => name.startsWith('data/garage')));
+
+// Only a snapshot on disk (the main file and .bak are gone): still the same car.
+const fromSnapshot = createHarness({ files: { 'data/garage.1.json': snapshotRaw } });
+fromSnapshot.fireNet('fk_house:server:garage:request', 1, []);
+const snapshotState = fromSnapshot.captured.client
+  .filter((event) => event.name === 'fk_house:client:garage:state').pop();
+check('a restart with only a snapshot on disk still has the car',
+  !!snapshotState && snapshotState.args[0].model === 'adder',
+  snapshotState && snapshotState.args[0]);
+
+fromSnapshot.fireNet('fk_house:server:garage:spawn', 1, []);
+check('and spawns it again as the same model',
+  fromSnapshot.vehicleCalls.created.some((call) => call.hash === fromSnapshot.joaat('adder')),
+  fromSnapshot.vehicleCalls.created.map((call) => call.hash));
+
+check('the rescued copy is written back to the main file',
+  (() => {
+    const raw = fromSnapshot.filesystem['data/garage.json'];
+    return !!raw && JSON.parse(raw).vehicles['license:test1'].model === 'adder';
+  })(), fromSnapshot.filesystem['data/garage.json']);
+
+// Corrupt file *and* corrupt backup, a good snapshot underneath.
+const rescued = createHarness({
+  files: {
+    'data/garage.json': '{"version":1,"vehicles":{"license:test1":{"model":"add',
+    'data/garage.bak.json': 'not json at all',
+    'data/garage.2.json': snapshotRaw,
+  },
+});
+rescued.fireNet('fk_house:server:garage:request', 1, []);
+const rescuedState = rescued.captured.client
+  .filter((event) => event.name === 'fk_house:client:garage:state').pop();
+check('a corrupt file and backup fall back to the newest snapshot',
+  !!rescuedState && rescuedState.args[0].model === 'adder',
+  rescuedState && rescuedState.args[0]);
+
+// Two snapshots: the one with the later savedAt wins, not slot 1.
+const olderSnapshot = JSON.stringify({
+  version: 1,
+  savedAt: '2026-01-01T00:00:00Z',
+  vehicles: { 'license:test1': { model: 'sultan', plate: 'OLD', x: -811.3, y: 187.5, z: 71.6, w: 90 } },
+});
+const newerSnapshot = JSON.stringify({
+  version: 1,
+  savedAt: '2026-05-01T00:00:00Z',
+  vehicles: { 'license:test1': { model: 'adder', plate: 'NEW', x: -811.3, y: 187.5, z: 71.6, w: 90 } },
+});
+const newest = createHarness({
+  files: {
+    'data/garage.json': 'garbage',
+    'data/garage.1.json': olderSnapshot,
+    'data/garage.2.json': newerSnapshot,
+  },
+});
+newest.fireNet('fk_house:server:garage:request', 1, []);
+const newestState = newest.captured.client
+  .filter((event) => event.name === 'fk_house:client:garage:state').pop();
+check('the newest snapshot is the one restored',
+  !!newestState && newestState.args[0].model === 'adder',
+  newestState && newestState.args[0]);
+
+// Stopping the resource flushes the garage, and only for its own name.
+const stopping = createHarness();
+const stopCar = stopping.makeVehicle({ model: 'adder', x: -811.3, y: 187.5, z: 71.6 });
+stopping.fireNet('fk_house:server:garage:park', 1, [stopCar.netId, 'adder', 'FK 1']);
+delete stopping.filesystem['data/garage.json'];
+stopping.fireEvent('onResourceStop', ['some_other_resource']);
+check('a stop of another resource does not write the garage',
+  !stopping.filesystem['data/garage.json']);
+
+stopping.fireEvent('onResourceStop', ['fk_house']);
+check('stopping fk_house flushes the garage to disk',
+  (() => {
+    const raw = stopping.filesystem['data/garage.json'];
+    return !!raw && JSON.parse(raw).vehicles['license:test1'].model === 'adder';
+  })(), stopping.filesystem['data/garage.json']);
+
+// The client tells the player, in chat, that the car survived.
+const clientGarageSource = fs.readFileSync(path.join(ROOT, 'client', 'garage.lua'), 'utf8');
+check('the client announces the saved car once per session',
+  /is saved on the server/.test(clientGarageSource) && /announcedSaved/.test(clientGarageSource));
+check('/mycar prints when the car was last saved',
+  /saved on the server/.test(clientGarageSource) && /savedWhen\(saved\)/.test(clientGarageSource));
+check('the save stamp is shown in UTC, not a raw ISO string',
+  /%s %s UTC/.test(clientGarageSource));
 
 // ---------------------------------------------------------------------------
 // NUI card (jsdom)

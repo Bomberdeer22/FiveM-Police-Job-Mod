@@ -16,6 +16,7 @@ local lastVehicle = 0      -- vehicle we last sat in
 local wasInGarage = false  -- were we inside the garage when we got in?
 local spawnAskedAt = 0     -- GetGameTimer() of the last automatic spawn request
 local announceSpawned = false -- has the player been told the car is out this session
+local announcedSaved = false  -- has the player been told the saved car survived
 local doorOpen = nil
 
 local function cfg()
@@ -462,6 +463,21 @@ end)
 -- Server data
 -- ---------------------------------------------------------------------------
 
+--- "2026-11-02T14:03:00Z" -> "2026-11-02 14:03 UTC". The stamp is written by the
+--- server when the car was saved, so it is the same for every client.
+--- @return string|nil
+local function savedWhen(entry)
+    local stamp = type(entry) == 'table' and entry.savedAt or nil
+
+    if type(stamp) ~= 'string' then return nil end
+
+    local date, time = stamp:match('^(%d+-%d+-%d+)T(%d+:%d+)')
+
+    if not date then return nil end
+
+    return ('%s %s UTC'):format(date, time)
+end
+
 RegisterNetEvent('fk_house:client:garage:state', function(state)
     local previous = saved
     saved = type(state) == 'table' and state or nil
@@ -473,6 +489,17 @@ RegisterNetEvent('fk_house:client:garage:state', function(state)
     elseif not previous or previous.model ~= saved.model or previous.plate ~= saved.plate then
         -- A different car is stored now, so it is worth bringing it out at once.
         spawnAskedAt = 0
+    end
+
+    -- Once per session: say that the car came back from the server. This is the
+    -- line that proves the save survived the restart, without needing F8.
+    if saved and not announcedSaved then
+        announcedSaved = true
+
+        local when = savedWhen(saved)
+
+        notify(('Your %s is saved on the server%s. Walk up to the garage to bring it out.')
+            :format(saved.model or 'car', when and (' (saved ' .. when .. ')') or ''))
     end
 
     -- Keep an open garage card in step with what the server just said.
@@ -505,7 +532,8 @@ RegisterCommand('mycar', function()
         return notify('No car saved. Drive one into Michael\'s garage, get out, and it saves itself.')
     end
 
-    local line = ('Saved: %s (%s).'):format(saved.model, saved.plate or 'no plate')
+    local line = ('Saved: %s (%s), saved on the server %s.'):format(
+        saved.model, saved.plate or 'no plate', savedWhen(saved) or 'earlier')
 
     if liveNet and NetworkDoesNetworkIdExist(liveNet) then
         local veh = NetToVeh(liveNet)

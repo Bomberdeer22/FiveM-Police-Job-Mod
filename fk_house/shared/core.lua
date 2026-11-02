@@ -63,6 +63,54 @@ function Persist.decode(path)
     return nil
 end
 
+--- Decode a JSON file with every recovery step: the file itself, then the .bak
+--- copy, then the rotating snapshots. A crash or a bad restart can leave one
+--- generation cut short; that must not cost the player their car.
+--- @param path string
+--- @param slots integer|nil how many snapshot slots to inspect (default 3)
+--- @return table|nil value, string|nil source
+function Persist.decodeAny(path, slots)
+    local function attempt(candidate)
+        local raw = Persist.read(candidate)
+
+        if not raw then return nil end
+
+        local ok, value = pcall(json.decode, raw)
+
+        if ok and type(value) == 'table' then return value end
+
+        return nil
+    end
+
+    local direct = attempt(path)
+
+    if direct then return direct, path end
+
+    local backupPath = Persist.backupPath(path)
+    local backup = attempt(backupPath)
+
+    if backup then return backup, backupPath end
+
+    -- Snapshots are written round-robin, so slot 1 is not necessarily the
+    -- newest: take the one with the latest `savedAt` stamp.
+    local best, bestSource, bestStamp
+
+    for slot = 1, math.max(1, math.floor(tonumber(slots) or 3)) do
+        local candidate = Persist.slotPath(path, slot)
+        local value = attempt(candidate)
+
+        if value then
+            local stamp = type(value.savedAt) == 'string' and value.savedAt or ''
+
+            if not best or stamp > bestStamp then
+                best, bestSource, bestStamp = value, candidate, stamp
+            end
+        end
+    end
+
+    return best, bestSource
+end
+
 --- Write a text file inside the resource folder.
 --- The previous contents are copied to the .bak path first, so a failed or
 --- partial write still leaves a readable copy behind.

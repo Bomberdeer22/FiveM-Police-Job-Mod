@@ -235,6 +235,11 @@ Config.Staff = {
 Config.Persistence = {
     outfitsFile = 'data/outfits.json',
     spotsFile = 'data/spots.json',
+
+    -- Rotating generations of a saved file (data/garage.1.json, .2.json, ...).
+    -- A car must survive a restart even if the last write was cut short, so the
+    -- garage keeps this many older copies and load() falls back to the newest.
+    backups = { slots = 3 },
 }
 
 -- ---------------------------------------------------------------------------
