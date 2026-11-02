@@ -172,7 +172,7 @@ send it another point and the player gets the same polished transition.
 
 ## Michael's house (`fk_house`)
 
-The mansion ships with interaction spots (wardrobe, kitchen, shower, bed, sofa). The
+The mansion ships with interaction spots (wardrobe, kitchen, shower, bed, sofa, garage). The
 police mod can read them, move them, or add its own by adding entries to
 `Config.Spots` in `fk_house/config.lua` and calling:
 
@@ -188,3 +188,46 @@ local outfits = exports.fk_house:GetPlayerOutfits('license:110000112345678')
 Player outfits are plain component/drawable/texture triples, so the police mod can reuse
 them for uniforms later (`SetPedComponentVariation` per entry) instead of re-inventing
 clothing storage.
+
+## The personal vehicle (`fk_house` garage)
+
+Each licence can keep one car in Michael's garage. The record only holds what is needed
+to recreate it — the model **hash**, the model name, the plate, the last position and the
+heading — so the car that comes back on the next login is the same model:
+
+```json
+{
+  "version": 1,
+  "vehicles": {
+    "license:110000112345678": {
+      "model": "adder", "hash": 782665360, "plate": "FK 1234",
+      "x": -810.4, "y": 187.6, "z": 71.6, "w": 95.0,
+      "savedAt": "2026-11-02T18:04:11Z"
+    }
+  }
+}
+```
+
+Read it, or bring the car out, from your own code:
+
+```lua
+local record = exports.fk_house:GetGarageVehicle('license:110000112345678')
+-- { model = 'adder', hash = 782665360, plate = 'FK 1234', x = ..., y = ..., z = ..., w = ... }
+
+local state = exports.fk_house:GetGarageState(src)   -- what the client is allowed to see
+local netId = exports.fk_house:SpawnGarageVehicle(src) -- server-side CreateVehicle, same model
+```
+
+Events, if you prefer them: `fk_house:server:garage:request`, `:garage:spawn`,
+`:garage:park` (`netId`, `modelName`, `plate`) and `:garage:forget`; the client side
+receives `fk_house:client:garage:state` and `fk_house:client:garage:spawned`.
+
+Two rules matter if you build on this:
+
+1. **The server creates the entity**, never a client. A client-created car is deleted as
+   soon as that client stops streaming it, so it can never survive a drive across the
+   map. The server's copy is put in orphan mode (`SetEntityOrphanMode(entity, 2)`) and a
+   watchdog recreates it in the garage if it disappears.
+2. **The hash is the truth.** `park` reads `GetEntityModel(entity)` from the entity
+   itself, so a client cannot claim a different model than the car it is standing next
+   to, and `Config.Garage.blockedModels` is matched by hash as well as by name.

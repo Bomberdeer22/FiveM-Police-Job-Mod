@@ -7,7 +7,7 @@ const { lua, lauxlib, lualib, to_luastring, to_jsstring } = require('fengari');
 const { JSDOM } = require('jsdom');
 
 const ROOT = path.join(__dirname, '..', 'fk_house');
-const FILES = ['config.lua', 'shared/house.lua', 'server/main.lua'];
+const FILES = ['config.lua', 'shared/house.lua', 'shared/garage.lua', 'server/main.lua', 'server/garage.lua'];
 
 let pass = 0;
 const failures = [];
@@ -35,6 +35,7 @@ function createHarness(options = {}) {
   const commands = {};
   const events = {};
   const exportsMap = {};
+  let waitCalls = 0;
 
   const abs = (idx) => (idx > 0 || idx <= lua.LUA_REGISTRYINDEX ? idx : lua.lua_gettop(L) + idx + 1);
 
@@ -188,7 +189,18 @@ function createHarness(options = {}) {
     return 0;
   });
 
-  setGlobal('Wait', () => 0);
+  // A real Wait yields the thread. Here it just counts, so that a `while true`
+  // thread (the garage watchdog) is stopped instead of hanging the test run.
+  setGlobal('Wait', () => {
+    waitCalls += 1;
+
+    if (waitCalls > 400) {
+      lua.lua_pushstring(L, to_luastring('thread stopped by the test harness'));
+      lua.lua_error(L);
+    }
+
+    return 0;
+  });
 
   setGlobal('GetPlayers', () => {
     lua.lua_createtable(L, 0, 2);
@@ -279,6 +291,145 @@ function createHarness(options = {}) {
     return 1;
   });
 
+
+  // -------------------------------------------------------------------------
+  // Vehicle world (garage)
+  // -------------------------------------------------------------------------
+  // fengari has no vector3, so GetEntityCoords returns a { x, y, z } table -
+  // which is exactly what House.readCoords() accepts.
+  const joaat = (value) => {
+    let h = 0;
+    const str = String(value).toLowerCase();
+    for (let i = 0; i < str.length; i += 1) {
+      h = (h + str.charCodeAt(i)) >>> 0;
+      h = (h + (h << 10)) >>> 0;
+      h = (h ^ (h >>> 6)) >>> 0;
+    }
+    h = (h + (h << 3)) >>> 0;
+    h = (h ^ (h >>> 11)) >>> 0;
+    return (h + (h << 15)) >>> 0;
+  };
+
+  let nextVehicleEntity = 5000;
+  const vehicleWorld = new Map();
+  const vehicleCalls = { created: [], deleted: [], orphan: [], coords: [] };
+  const pedCoords = options.pedCoords || { x: -810.53, y: 187.79, z: 71.48 };
+
+  function makeVehicle(entry = {}) {
+    const entity = nextVehicleEntity++;
+    const netId = 100000 + entity;
+    vehicleWorld.set(entity, {
+      netId,
+      model: joaat(entry.model || 'adder'),
+      modelName: String(entry.model || 'adder').toLowerCase(),
+      x: entry.x === undefined ? -810.53 : entry.x,
+      y: entry.y === undefined ? 187.79 : entry.y,
+      z: entry.z === undefined ? 71.6 : entry.z,
+      w: entry.w === undefined ? 110.0 : entry.w,
+      exists: true,
+    });
+    return { entity, netId };
+  }
+
+  setGlobal('CreateVehicle', () => {
+    const hash = Math.trunc(lua.lua_tonumber(L, 1));
+    const x = lua.lua_tonumber(L, 2);
+    const y = lua.lua_tonumber(L, 3);
+    const z = lua.lua_tonumber(L, 4);
+    const w = lua.lua_tonumber(L, 5);
+    const handle = makeVehicle({ x, y, z, w });
+    vehicleWorld.get(handle.entity).model = hash >>> 0;
+    vehicleCalls.created.push({ entity: handle.entity, hash: hash >>> 0, x, y, z, w });
+    lua.lua_pushnumber(L, handle.entity);
+    return 1;
+  });
+
+  setGlobal('DoesEntityExist', () => {
+    const entity = Math.trunc(lua.lua_tonumber(L, 1));
+    const entry = vehicleWorld.get(entity);
+    lua.lua_pushboolean(L, !!(entry && entry.exists));
+    return 1;
+  });
+
+  setGlobal('GetEntityType', () => {
+    const entity = Math.trunc(lua.lua_tonumber(L, 1));
+    const entry = vehicleWorld.get(entity);
+    lua.lua_pushnumber(L, entry && entry.exists ? 2 : 0);
+    return 1;
+  });
+
+  setGlobal('GetEntityModel', () => {
+    const entity = Math.trunc(lua.lua_tonumber(L, 1));
+    const entry = vehicleWorld.get(entity);
+    lua.lua_pushnumber(L, entry ? entry.model : 0);
+    return 1;
+  });
+
+  setGlobal('GetHashKey', () => {
+    const value = to_jsstring(lua.lua_tostring(L, 1));
+    lua.lua_pushnumber(L, joaat(value));
+    return 1;
+  });
+
+  setGlobal('NetworkGetNetworkIdFromEntity', () => {
+    const entity = Math.trunc(lua.lua_tonumber(L, 1));
+    const entry = vehicleWorld.get(entity);
+    lua.lua_pushnumber(L, entry ? entry.netId : 0);
+    return 1;
+  });
+
+  setGlobal('NetworkGetEntityFromNetworkId', () => {
+    const netId = Math.trunc(lua.lua_tonumber(L, 1));
+    for (const [entity, entry] of vehicleWorld) {
+      if (entry.netId === netId && entry.exists) {
+        lua.lua_pushnumber(L, entity);
+        return 1;
+      }
+    }
+    lua.lua_pushnumber(L, 0);
+    return 1;
+  });
+
+  setGlobal('GetPlayerPed', () => {
+    const source = Math.trunc(lua.lua_tonumber(L, 1));
+    lua.lua_pushnumber(L, 1000 + source);
+    return 1;
+  });
+
+  setGlobal('GetEntityCoords', () => {
+    const entity = Math.trunc(lua.lua_tonumber(L, 1));
+    const entry = vehicleWorld.get(entity);
+    pushJs(entry ? { x: entry.x, y: entry.y, z: entry.z } : { ...pedCoords });
+    return 1;
+  });
+
+  setGlobal('GetEntityHeading', () => {
+    const entity = Math.trunc(lua.lua_tonumber(L, 1));
+    const entry = vehicleWorld.get(entity);
+    lua.lua_pushnumber(L, entry ? entry.w : 0);
+    return 1;
+  });
+
+  setGlobal('SetEntityOrphanMode', () => {
+    vehicleCalls.orphan.push([Math.trunc(lua.lua_tonumber(L, 1)), Math.trunc(lua.lua_tonumber(L, 2))]);
+    return 0;
+  });
+
+  setGlobal('DeleteEntity', () => {
+    const entity = Math.trunc(lua.lua_tonumber(L, 1));
+    const entry = vehicleWorld.get(entity);
+    if (entry) entry.exists = false;
+    vehicleCalls.deleted.push(entity);
+    return 0;
+  });
+
+  setGlobal('SetEntityCoords', () => {
+    vehicleCalls.coords.push(Math.trunc(lua.lua_tonumber(L, 1)));
+    return 0;
+  });
+
+  setGlobal('SetEntityHeading', () => 0);
+
   const economy = options.economyMock;
   if (economy) {
     // FiveM drops the implicit self from exports.resource:Fn(...) calls
@@ -334,6 +485,10 @@ function createHarness(options = {}) {
     filesystem,
     lua,
     state: L,
+    joaat,
+    makeVehicle,
+    vehicleCalls,
+    vehicleWorld,
     callExport(name, args = []) {
       if (exportsMap[name] === undefined) throw new Error(`no export "${name}"`);
       return callRef(exportsMap[name], Array.isArray(args) ? args : [args]);
@@ -350,7 +505,15 @@ function createHarness(options = {}) {
     },
     runThreads() {
       const threads = captured.threads.splice(0, captured.threads.length);
-      threads.forEach((ref) => callRef(ref));
+      threads.forEach((ref) => {
+        waitCalls = 0;
+        try {
+          callRef(ref);
+        } catch (error) {
+          // long-running threads are cut off by the Wait guard above
+          if (String(error && error.message).indexOf('test harness') === -1) throw error;
+        }
+      });
     },
   };
 }
@@ -461,11 +624,11 @@ const h = createHarness();
 h.runThreads(); // boot thread
 
 const [spots] = h.callExport('GetSpots');
-check('five interaction spots are configured', Array.isArray(spots) && spots.length === 5, spots && spots.length);
+check('six interaction spots are configured', Array.isArray(spots) && spots.length === 6, spots && spots.length);
 
 const names = (spots || []).map((spot) => spot.name);
-check('spots cover wardrobe, bed, shower, kitchen and living room',
-  ['wardrobe', 'bed', 'shower', 'kitchen', 'livingroom'].every((name) => names.includes(name)),
+check('spots cover wardrobe, bed, shower, kitchen, living room and garage',
+  ['wardrobe', 'bed', 'shower', 'kitchen', 'livingroom', 'garage'].every((name) => names.includes(name)),
   names);
 
 check('every spot has a sensible radius',
@@ -524,7 +687,7 @@ check('the same spot fires when you are on its floor',
   })());
 
 check('boot reports the version and spot count',
-  h.captured.logs.some((line) => /Ready \(v[\d.]+\)\. 5 spot\(s\)/.test(line)),
+  h.captured.logs.some((line) => /Ready \(v[\d.]+\)\. 6 spot\(s\)/.test(line)),
   h.captured.logs);
 
 check('distance is computed in 3D',
@@ -725,6 +888,222 @@ freeFood.fireNet('fk_house:server:buy', 1, ['coffee']);
 const freeResult = freeFood.captured.client.filter((event) => event.name === 'fk_house:client:buyResult').pop();
 check('food is free when the economy is not running',
   !!freeResult && freeResult.args[0] === true, freeResult && freeResult.args);
+
+// ---------------------------------------------------------------------------
+// Garage: a parked car is persisted and comes back as the same model
+// ---------------------------------------------------------------------------
+
+const manifestSource = fs.readFileSync(path.join(ROOT, 'fxmanifest.lua'), 'utf8');
+check('the manifest loads the shared, server and client garage files',
+  ['shared/garage.lua', 'server/garage.lua', 'client/garage.lua']
+    .every((file) => manifestSource.indexOf(file) !== -1),
+  manifestSource.match(/garage\.lua/g));
+
+const clientGarage = fs.readFileSync(path.join(ROOT, 'client', 'garage.lua'), 'utf8');
+check('the client marks the car as a mission entity',
+  /SetEntityAsMissionEntity/.test(clientGarage));
+check('the client flags it as owned by the player',
+  /SetVehicleHasBeenOwnedByPlayer\(veh, true\)/.test(clientGarage));
+check('the client gives it a huge culling radius',
+  /SetEntityDistanceCullingRadius/.test(clientGarage));
+check('the client reads the real model from the entity',
+  /GetDisplayNameFromVehicleModel\(GetEntityModel\(veh\)\)/.test(clientGarage));
+
+const garageCfg = luaReadGlobal('Config.Garage') || {};
+const garageCoords = garageCfg.coords || {};
+const garageSpawn = garageCfg.spawn || {};
+
+check('the garage is configured on the garage floor',
+  Math.abs(garageCoords.x + 810.53) < 0.1 && Math.abs(garageCoords.y - 187.79) < 0.1,
+  garageCoords);
+check('the car has a spawn point inside the garage',
+  Math.abs(garageSpawn.x - garageCoords.x) < 2 && Math.abs(garageSpawn.y - garageCoords.y) < 2,
+  garageSpawn);
+check('the car is a personal vehicle (huge culling radius)',
+  typeof garageCfg.cullDistance === 'number' && garageCfg.cullDistance >= 1000,
+  garageCfg.cullDistance);
+check('the car is respawned if it ever disappears', garageCfg.respawn !== false);
+
+const garageSpot = (spots || []).find((spot) => spot.name === 'garage');
+check('there is a garage interaction spot',
+  !!garageSpot && garageSpot.type === 'garage', garageSpot);
+check('the garage spot is inside the garage interior',
+  !!garageSpot && Math.abs(garageSpot.x + 810.53) < 1.0 && Math.abs(garageSpot.y - 187.79) < 1.0,
+  garageSpot);
+check('the garage spot sits on the garage floor',
+  !!garageSpot && Math.abs(garageSpot.z - 71.48) < 0.35, garageSpot && garageSpot.z);
+
+check('model names are lower-cased and trimmed',
+  luaCallGlobal('Garage.normalizeModel', ['  Adder '])[0] === 'adder');
+check('nonsense model names are refused',
+  luaCallGlobal('Garage.normalizeModel', ['!!!'])[0] === null);
+check('blocked models are recognised',
+  luaCallGlobal('Garage.isBlocked', ['rhino', ['rhino']])[0] === true
+    && luaCallGlobal('Garage.isBlocked', ['adder', ['rhino']])[0] === false);
+check('plates are upper-cased and trimmed',
+  luaCallGlobal('Garage.normalizePlate', [' fk 1234!'])[0] === 'FK 1234');
+check('empty plates are refused', luaCallGlobal('Garage.normalizePlate', [''])[0] === null);
+check('saved vehicles are normalised',
+  (() => {
+    const entry = luaCallGlobal('Garage.normalizeVehicle',
+      [{ model: ' Adder', plate: 'fk 1', x: -810.4, y: 187.6, z: 71.6, w: 455.5 }])[0];
+    return !!entry && entry.model === 'adder' && entry.plate === 'FK 1' && entry.w === 95.5;
+  })());
+check('a vehicle inside the garage is in the zone',
+  luaCallGlobal('Garage.inZone', [{ x: -810.4, y: 187.6, z: 71.6 }, garageCoords, garageCfg.radius])[0] === true);
+check('a vehicle down the street is not',
+  luaCallGlobal('Garage.inZone', [{ x: -760, y: 187.6, z: 71.6 }, garageCoords, garageCfg.radius])[0] === false);
+check('a car parked in the garage keeps its own spot',
+  (() => {
+    const [x, y, , w] = luaCallGlobal('Garage.spawnPoint',
+      [{ model: 'adder', x: -810.4, y: 187.6, z: 71.6, w: 95 }, garageCfg]);
+    return Math.abs(x + 810.4) < 0.01 && Math.abs(y - 187.6) < 0.01 && w === 95;
+  })());
+check('a saved car outside the garage falls back to the spawn point',
+  luaCallGlobal('Garage.spawnPoint',
+    [{ model: 'adder', x: -500, y: 100, z: 30, w: 0 }, garageCfg])[0] === garageSpawn.x);
+
+// --- parking ---------------------------------------------------------------
+const garage = createHarness();
+const parked = garage.makeVehicle({ model: 'adder', x: -810.4, y: 187.6, z: 71.6, w: 95 });
+garage.fireNet('fk_house:server:garage:park', 1, [parked.netId, 'Adder', 'fk 1234']);
+
+const parkedState = garage.captured.client
+  .filter((event) => event.name === 'fk_house:client:garage:state').pop();
+check('parking stores the car for that player',
+  !!parkedState && !!parkedState.args[0] && parkedState.args[0].model === 'adder',
+  parkedState && parkedState.args);
+check('the model survives the round trip exactly',
+  !!parkedState && parkedState.args[0].model === 'adder', parkedState && parkedState.args[0]);
+check('the model hash is stored next to the name',
+  !!parkedState && parkedState.args[0].hash === garage.joaat('adder'),
+  parkedState && parkedState.args[0]);
+check('the plate is stored in upper case',
+  !!parkedState && parkedState.args[0].plate === 'FK 1234', parkedState && parkedState.args[0]);
+
+const garageFile = garage.filesystem['data/garage.json'];
+check('the car is written to data/garage.json',
+  typeof garageFile === 'string' && garageFile.indexOf('"adder"') !== -1,
+  garageFile && garageFile.slice(0, 120));
+check('the file is keyed by the player licence',
+  (() => {
+    try {
+      return !!JSON.parse(garageFile).vehicles['license:test1'];
+    } catch (error) {
+      return false;
+    }
+  })());
+
+// --- it comes back ---------------------------------------------------------
+// Pretend the car was culled / the player logged out: the entity is gone but
+// the record survives, which is exactly what a reconnect looks like.
+garage.vehicleWorld.get(parked.entity).exists = false;
+
+garage.captured.client.length = 0;
+garage.fireNet('fk_house:server:garage:spawn', 1, []);
+
+const spawnedEvent = garage.captured.client
+  .filter((event) => event.name === 'fk_house:client:garage:spawned').pop();
+check('asking for the car sends the client a net id',
+  !!spawnedEvent && typeof spawnedEvent.args[0] === 'number' && spawnedEvent.args[0] > 0,
+  spawnedEvent && spawnedEvent.args);
+check('the car is created with the stored model',
+  garage.vehicleCalls.created.some((call) => call.hash === garage.joaat('adder')),
+  garage.vehicleCalls.created.map((call) => call.hash));
+check('it is created inside the garage',
+  garage.vehicleCalls.created.some((call) =>
+    Math.abs(call.x + 810.4) < 1.0 && Math.abs(call.y - 187.6) < 1.0),
+  garage.vehicleCalls.created);
+check('it is orphaned so it never despawns without its owner',
+  garage.vehicleCalls.orphan.some(([, mode]) => mode === 2),
+  garage.vehicleCalls.orphan);
+
+// --- a restart gives the same car ------------------------------------------
+const garageRestart = createHarness({ files: { 'data/garage.json': garageFile } });
+garageRestart.fireNet('fk_house:server:garage:request', 1, []);
+const restored = garageRestart.captured.client
+  .filter((event) => event.name === 'fk_house:client:garage:state').pop();
+check('the saved car survives a restart',
+  !!restored && !!restored.args[0] && restored.args[0].model === 'adder',
+  restored && restored.args);
+garageRestart.fireNet('fk_house:server:garage:spawn', 1, []);
+check('and spawns again as the identical model',
+  garageRestart.vehicleCalls.created.some((call) => call.hash === garageRestart.joaat('adder')),
+  garageRestart.vehicleCalls.created.map((call) => call.hash));
+
+// --- refusals --------------------------------------------------------------
+const outside = createHarness();
+const streetCar = outside.makeVehicle({ model: 'sultan', x: -760, y: 150, z: 60 });
+outside.fireNet('fk_house:server:garage:park', 1, [streetCar.netId, 'sultan', '']);
+check('a car outside the garage is refused',
+  outside.captured.client.some((event) => event.name === 'fk_house:client:notify'
+    && /garage first/i.test(String(event.args[0]))),
+  outside.captured.client);
+
+const spoofed = createHarness();
+const stolen = spoofed.makeVehicle({ model: 'adder', x: -810.4, y: 187.6, z: 71.6 });
+spoofed.fireNet('fk_house:server:garage:park', 1, [stolen.netId, 'titan', '']);
+spoofed.vehicleWorld.get(stolen.entity).exists = false;
+spoofed.fireNet('fk_house:server:garage:spawn', 1, []);
+check('a spoofed model name cannot change the stored model',
+  spoofed.vehicleCalls.created.some((call) => call.hash === spoofed.joaat('adder'))
+    && !spoofed.vehicleCalls.created.some((call) => call.hash === spoofed.joaat('titan')),
+  spoofed.vehicleCalls.created.map((call) => call.hash));
+
+const blocked = createHarness();
+// Config.Garage.blockedModels = { 'rhino' }
+blocked.lua.lua_getglobal(blocked.state, to_luastring('Config'));
+blocked.lua.lua_getfield(blocked.state, -1, to_luastring('Garage'));
+blocked.lua.lua_createtable(blocked.state, 1, 0);
+blocked.lua.lua_pushstring(blocked.state, to_luastring('rhino'));
+blocked.lua.lua_rawseti(blocked.state, -2, 1);
+blocked.lua.lua_setfield(blocked.state, -2, to_luastring('blockedModels'));
+blocked.lua.lua_settop(blocked.state, 0);
+
+const tank = blocked.makeVehicle({ model: 'rhino', x: -810.4, y: 187.6, z: 71.6 });
+blocked.fireNet('fk_house:server:garage:park', 1, [tank.netId, 'adder', '']);
+check('a blocked model is refused by hash even with a fake name',
+  blocked.captured.client.some((event) => event.name === 'fk_house:client:notify'
+    && /cannot be kept in the garage/i.test(String(event.args[0]))),
+  blocked.captured.client);
+check('nothing is written for a refused park', !blocked.filesystem['data/garage.json']);
+
+const ghost = createHarness();
+ghost.fireNet('fk_house:server:garage:park', 1, [999999, 'adder', '']);
+check('a made-up net id is refused',
+  ghost.captured.client.some((event) => event.name === 'fk_house:client:notify'
+    && /gone/i.test(String(event.args[0]))),
+  ghost.captured.client);
+
+const nothing = createHarness();
+nothing.fireNet('fk_house:server:garage:spawn', 1, []);
+check('asking to spawn with an empty garage explains why',
+  nothing.captured.client.some((event) => event.name === 'fk_house:client:notify'
+    && /no car saved/i.test(String(event.args[0]))),
+  nothing.captured.client);
+
+// --- console command -------------------------------------------------------
+garage.runCommand('garage_list', 0, []);
+check('garage_list prints the stored car on the server console',
+  garage.captured.logs.some((line) => line.indexOf('adder (FK 1234)') !== -1),
+  garage.captured.logs.filter((line) => line.indexOf('adder') !== -1));
+
+// --- forgetting ------------------------------------------------------------
+garage.fireNet('fk_house:server:garage:forget', 1, []);
+const cleared = garage.captured.client
+  .filter((event) => event.name === 'fk_house:client:garage:state').pop();
+check('forgetting the car clears the saved record',
+  !!cleared && cleared.args[0] === null, cleared && cleared.args);
+check('forgetting deletes the live car',
+  garage.vehicleCalls.deleted.length > 0, garage.vehicleCalls.deleted);
+check('the saved file is emptied too',
+  (() => {
+    try {
+      return Object.keys(JSON.parse(garage.filesystem['data/garage.json']).vehicles).length === 0;
+    } catch (error) {
+      return false;
+    }
+  })(), garage.filesystem['data/garage.json']);
 
 // ---------------------------------------------------------------------------
 // NUI card (jsdom)

@@ -201,6 +201,12 @@ local function buildOptions(spot)
             action = 'relax',
             config = raw,
         }
+    elseif spot.type == 'garage' then
+        if type(GarageMenuOptions) == 'function' then
+            for _, option in ipairs(GarageMenuOptions()) do
+                options[#options + 1] = option
+            end
+        end
     end
 
     return options
@@ -213,6 +219,8 @@ end
 local function openMenu(spot)
     if spot.type == 'wardrobe' then
         TriggerServerEvent('fk_house:server:requestOutfits')
+    elseif spot.type == 'garage' then
+        TriggerServerEvent('fk_house:server:garage:request')
     end
 
     local options = buildOptions(spot)
@@ -254,6 +262,16 @@ local function closeMenu()
 
     menu = nil
     SendNUIMessage({ action = 'hide' })
+end
+
+--- Rebuild the card that is currently open (used when the garage state
+--- changes underneath it, e.g. right after a car is parked).
+function HouseRefreshMenu()
+    if menu and menu.spot and menu.spot.type == 'garage' then
+        local spot = menu.spot
+        closeMenu()
+        openMenu(spot)
+    end
 end
 
 -- ---------------------------------------------------------------------------
@@ -449,6 +467,10 @@ local function selectOption(index)
         sleep(option.config or {})
     elseif option.action == 'relax' then
         relax(option.config)
+    elseif option.action and option.action:sub(1, 7) == 'garage_' then
+        if type(GarageAction) == 'function' then
+            GarageAction(option)
+        end
     end
 end
 
@@ -832,6 +854,7 @@ RegisterCommand('househelp', function()
         '  Shower — clean up and heal',
         '  Bed — sleep, the clock moves forward',
         '  Living room — relax on the sofa',
+        '  Garage — park a car (it saves itself and returns on login) or bring it out',
         'Staff: /housespot <name> saves your position, /housetune <name> follows you until you press E,',
         '       /housemarkers shows every spot, /housedebug and /housescan explain what the script sees.',
     }, '\n'))

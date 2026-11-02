@@ -4,20 +4,23 @@ lua54 'yes'
 
 name 'fk_house'
 author 'FiveM Police Job Mod'
-description 'Interactive Michael De Santa mansion: wardrobe, kitchen, shower, bed and living room.'
-version '0.1.2'
+description 'Interactive Michael De Santa mansion: wardrobe, kitchen, shower, bed, living room and a persistent personal vehicle in the garage.'
+version '0.2.0'
 
 shared_scripts {
     'config.lua',
     'shared/house.lua',
+    'shared/garage.lua',
 }
 
 server_scripts {
     'server/main.lua',
+    'server/garage.lua',
 }
 
 client_scripts {
     'client/main.lua',
+    'client/garage.lua',
 }
 
 ui_page 'html/index.html'
