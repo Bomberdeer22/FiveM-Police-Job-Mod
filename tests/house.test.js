@@ -314,6 +314,15 @@ function createHarness(options = {}) {
   const vehicleWorld = new Map();
   const vehicleCalls = { created: [], deleted: [], orphan: [], coords: [] };
   const pedCoords = options.pedCoords || { x: -810.53, y: 187.79, z: 71.48 };
+  // Simulates the tick or two the game needs before a server-created entity is
+  // registered, which is what made the old code report create_failed.
+  let hideNewVehicles = options.hideNewVehicles === true;
+  let clock = 0;
+
+  setGlobal('GetGameTimer', () => {
+    lua.lua_pushnumber(L, clock);
+    return 1;
+  });
 
   function makeVehicle(entry = {}) {
     const entity = nextVehicleEntity++;
@@ -326,7 +335,8 @@ function createHarness(options = {}) {
       y: entry.y === undefined ? 187.79 : entry.y,
       z: entry.z === undefined ? 71.6 : entry.z,
       w: entry.w === undefined ? 110.0 : entry.w,
-      exists: true,
+      exists: !hideNewVehicles,
+      hidden: hideNewVehicles,
     });
     return { entity, netId };
   }
@@ -489,6 +499,18 @@ function createHarness(options = {}) {
     makeVehicle,
     vehicleCalls,
     vehicleWorld,
+    advance(ms) { clock += Number(ms) || 0; },
+    revealVehicles() {
+      hideNewVehicles = false;
+
+      for (const entry of vehicleWorld.values()) {
+        if (entry.hidden) {
+          entry.hidden = false;
+          entry.exists = true;
+        }
+      }
+    },
+    hideNewVehicles(value = true) { hideNewVehicles = value === true; },
     callExport(name, args = []) {
       if (exportsMap[name] === undefined) throw new Error(`no export "${name}"`);
       return callRef(exportsMap[name], Array.isArray(args) ? args : [args]);
@@ -1227,6 +1249,88 @@ const statusLog = styled.captured.logs.join('\n');
 check('/housestatus reports spots and cars',
   statusLog.indexOf('spot(s)') !== -1 && statusLog.indexOf('car(s)') !== -1,
   statusLog.split('\n').slice(-3));
+
+// ---------------------------------------------------------------------------
+// The reported bug: "could not be spawned (create_failed)" for a car that was
+// actually there, followed by another car on every retry
+// ---------------------------------------------------------------------------
+
+check('model hashes are normalised to unsigned',
+  luaCallGlobal('Garage.normalizeHash', [-1])[0] === 4294967295
+    && luaCallGlobal('Garage.normalizeHash', [4294967295])[0] === 4294967295
+    && luaCallGlobal('Garage.normalizeHash', [0])[0] === null);
+
+check('a negative hash is kept on the saved vehicle',
+  (() => {
+    const entry = luaCallGlobal('Garage.normalizeVehicle',
+      [{ model: 'adder', plate: 'fk', x: 0, y: 0, z: 0, hash: -1234 }])[0];
+    return !!entry && entry.hash === 4294966062;
+  })());
+
+// A record written before the hash was normalised (so it is negative) must
+// still spawn the same car.
+const legacyHash = createHarness({
+  files: {
+    'data/garage.json': JSON.stringify({
+      version: 1,
+      vehicles: {
+        'license:test1': {
+          model: 'adder', hash: -1234, plate: 'FK 1', x: -811.3, y: 187.5, z: 71.6, w: 90,
+        },
+      },
+    }),
+  },
+});
+
+legacyHash.fireNet('fk_house:server:garage:spawn', 1, []);
+check('a negative stored hash spawns the same car',
+  legacyHash.vehicleCalls.created.length === 1
+    && legacyHash.vehicleCalls.created[0].hash === 4294966062,
+  legacyHash.vehicleCalls.created);
+
+// The regression itself: the entity takes a tick to register. That must be
+// "still coming", never "failed", and must not create a second car.
+const slow = createHarness();
+const slowParked = slow.makeVehicle({ model: 'adder', x: -811.3, y: 187.5, z: 71.6 });
+slow.fireNet('fk_house:server:garage:park', 1, [slowParked.netId, 'adder', 'FK 1']);
+check('the reported-bug harness parked a car first',
+  (() => {
+    const raw = slow.filesystem['data/garage.json'];
+    if (!raw) return false;
+    return Object.values(JSON.parse(raw).vehicles).some((veh) => veh.model === 'adder');
+  })(), slow.filesystem['data/garage.json']);
+
+// The parked car is impounded/despawned, so it has to be created again - and
+// the server-side entity does not exist yet on the tick it is created.
+slow.vehicleWorld.get(slowParked.entity).exists = false;
+slow.hideNewVehicles(true);
+slow.captured.client.length = 0;
+
+slow.fireNet('fk_house:server:garage:spawn', 1, []);
+check('a car that is still registering is not reported as failed',
+  !slow.captured.client.some((event) => event.name === 'fk_house:client:notify'),
+  slow.captured.client);
+
+slow.fireNet('fk_house:server:garage:spawn', 1, []);
+check('retrying while the car is registering does not create a second car',
+  slow.vehicleCalls.created.length === 1, slow.vehicleCalls.created.length);
+
+slow.revealVehicles();
+slow.runThreads();
+
+const slowSpawned = slow.captured.client
+  .filter((event) => event.name === 'fk_house:client:garage:spawned').pop();
+check('the client gets the net id once the car registers',
+  !!slowSpawned && typeof slowSpawned.args[0] === 'number' && slowSpawned.args[0] > 0,
+  slowSpawned && slowSpawned.args);
+
+slow.captured.client.length = 0;
+slow.fireNet('fk_house:server:garage:spawn', 1, []);
+const reused = slow.captured.client
+  .filter((event) => event.name === 'fk_house:client:garage:spawned').pop();
+check('a third request reuses the car instead of creating one',
+  !!reused && slow.vehicleCalls.created.length === 1,
+  { created: slow.vehicleCalls.created.length, reused: reused && reused.args[0] });
 
 // ---------------------------------------------------------------------------
 // NUI card (jsdom)

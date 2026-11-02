@@ -71,7 +71,9 @@ local function blockedHash(hash)
     for _, value in pairs(list) do
         local name = Garage.normalizeModel(value)
 
-        if name and math.floor(GetHashKey(name)) == math.floor(hash) then return true end
+        if name and Garage.normalizeHash(GetHashKey(name)) == Garage.normalizeHash(hash) then
+            return true
+        end
     end
 
     return false
@@ -88,7 +90,8 @@ local limits = {
     forget  = RateLimit.new(Config.RateLimit.garageForget),
 }
 
-local lastReset = {} -- [identifier] = os.time()
+local lastReset = {}   -- [identifier] = os.time()
+local lastFailure = {} -- [source] = os.time(), so a retry loop cannot spam the player
 
 --- @return boolean allowed
 local function allow(name, source)
@@ -185,42 +188,22 @@ local function removeLive(source)
     end
 end
 
-local function spawnFor(source, identifier, entry, forcePoint)
-    if not garageEnabled() then return nil, 'disabled' end
-    if type(entry) ~= 'table' then return nil, 'empty' end
+--- Tell the client about a car that exists on the server.
+--- @return number|nil netId
+local function announceSpawn(source, identifier, entity, entry, record)
+    if not entity or entity == 0 then return nil end
+    if not DoesEntityExist(entity) then return nil end
 
-    local current = live[source]
+    local netId = NetworkGetNetworkIdFromEntity(entity)
 
-    if current and current.entity and current.entity ~= 0 and DoesEntityExist(current.entity) then
-        TriggerClientEvent('fk_house:client:garage:spawned', source, current.netId, Garage.publicView(entry))
-        return current.netId
-    end
+    -- A handle that exists but has no net id yet is not ready either: the client
+    -- would get 0 and never resolve the car.
+    if not netId or netId == 0 then return nil end
 
-    local x, y, z, w
+    record.netId = netId
+    record.pending = false
+    record.nextTry = 0
 
-    if forcePoint then
-        local spawn = garageConfig().spawn or {}
-        x, y, z, w = spawn.x or 0.0, spawn.y or 0.0, spawn.z or 0.0, spawn.w or 0.0
-    else
-        x, y, z, w = Garage.spawnPoint(entry, garageConfig())
-    end
-
-    -- The hash is what the entity actually was, so a car whose display name
-    -- differs from its spawn name still comes back as the same model.
-    local hash = GetHashKey(entry.model)
-
-    if type(entry.hash) == 'number' and entry.hash > 0 then
-        hash = math.floor(entry.hash)
-    end
-
-    local entity = CreateVehicle(hash, x, y, z, w or 0.0, true, true)
-
-    if not entity or entity == 0 or not DoesEntityExist(entity) then
-        warn(('could not create a %s for %s'):format(entry.model, identifier))
-        return nil, 'create_failed'
-    end
-
-    -- Orphan mode 2 keeps the entity alive when no player is streaming it.
     pcall(function() SetEntityOrphanMode(entity, 2) end)
 
     -- Replicated on the entity, so any other script can ask whose car it is
@@ -235,19 +218,115 @@ local function spawnFor(source, identifier, entry, forcePoint)
         end
     end)
 
-    local netId = NetworkGetNetworkIdFromEntity(entity)
-
-    live[source] = {
-        entity = entity,
-        netId = netId,
-        identifier = identifier,
-        nextTry = 0,
-    }
-
     TriggerClientEvent('fk_house:client:garage:spawned', source, netId, Garage.publicView(entry))
     log(('spawned %s (%s) for %s, net id %s'):format(entry.model, entry.plate, identifier, tostring(netId)))
 
     return netId
+end
+
+--- Keep asking the game whether a freshly created entity has registered yet.
+--- Server-side CreateVehicle can take a tick or two, which is why checking
+--- DoesEntityExist once, immediately, used to report a failure for a car that
+--- was actually there - and then the next attempt spawned a second one.
+local function confirmSpawn(source, entity, entry, record)
+    CreateThread(function()
+        local deadline = GetGameTimer() + 5000
+
+        while GetGameTimer() < deadline do
+            if announceSpawn(source, record.identifier, entity, entry, record) then return end
+
+            if not DoesEntityExist(entity) and GetGameTimer() > (deadline - 4000) then
+                break
+            end
+
+            Wait(100)
+        end
+
+        -- Only forget the record we were confirming: the player may have parked
+        -- another car while this one was still coming up.
+        if live[source] == record then live[source] = nil end
+
+        if DoesEntityExist(entity) then
+            pcall(function() DeleteEntity(entity) end)
+        end
+
+        warn(('gave up spawning %s for %s'):format(entry.model, tostring(record.identifier)))
+
+        local now = os.time()
+
+        if GetPlayerName(source) and (now - (lastFailure[source] or 0)) >= 15 then
+            lastFailure[source] = now
+            reply(source, 'Your car could not be spawned. Try /carreset.')
+        end
+    end)
+end
+
+local function spawnFor(source, identifier, entry, forcePoint)
+    if not garageEnabled() then return nil, 'disabled' end
+    if type(entry) ~= 'table' then return nil, 'empty' end
+
+    local current = live[source]
+
+    if current then
+        -- A creation that is still being confirmed counts as "out": creating a
+        -- second one here is exactly how two cars used to appear.
+        if current.pending then return 'pending' end
+
+        if current.entity and current.entity ~= 0 and DoesEntityExist(current.entity) then
+            TriggerClientEvent('fk_house:client:garage:spawned', source, current.netId, Garage.publicView(entry))
+            return current.netId
+        end
+
+        live[source] = nil
+    end
+
+    local x, y, z, w
+
+    if forcePoint then
+        local spawn = garageConfig().spawn or {}
+        x, y, z, w = spawn.x or 0.0, spawn.y or 0.0, spawn.z or 0.0, spawn.w or 0.0
+    else
+        x, y, z, w = Garage.spawnPoint(entry, garageConfig())
+    end
+
+    -- The stored hash is what the entity actually was, so a car whose display
+    -- name differs from its spawn name (add-ons, police3, ...) still comes back
+    -- as the same model. Hashes are unsigned: see Garage.normalizeHash.
+    local hash = Garage.normalizeHash(entry.hash) or Garage.normalizeHash(GetHashKey(entry.model))
+
+    if not hash then
+        warn(('no usable model hash for %s (stored %s)'):format(entry.model, tostring(entry.hash)))
+        return nil, 'create_failed'
+    end
+
+    local entity = CreateVehicle(hash, x, y, z, w or 0.0, true, true)
+
+    if not entity or entity == 0 then
+        warn(('could not create a %s for %s (model hash %s)')
+            :format(entry.model, tostring(identifier), tostring(hash)))
+        return nil, 'create_failed'
+    end
+
+    local liveRecord = {
+        entity = entity,
+        netId = nil,
+        identifier = identifier,
+        pending = true,
+        nextTry = os.time() + 10,
+    }
+
+    live[source] = liveRecord
+
+    -- Fast path: on a healthy server the entity is registered straight away,
+    -- so the client gets the net id in this same tick.
+    local netId = announceSpawn(source, identifier, entity, entry, liveRecord)
+
+    if netId then return netId end
+
+    -- Slow path: confirm in the background instead of declaring failure.
+    confirmSpawn(source, entity, entry, liveRecord)
+
+    return 'pending'
 end
 
 --- Health snapshot for /housestatus.
@@ -304,18 +383,24 @@ function ResetGarageVehicle(source, force)
 
     local netId = spawnFor(source, identifier, entry, true)
 
+    if netId == 'pending' then return true, nil end
     if not netId then return false, 'create_failed' end
 
     return true, netId
 end
 
---- @return number|nil netId
+--- Bring the saved car out from your own code.
+--- @return number|nil netId (nil when there is nothing stored or the game is still confirming)
 function SpawnGarageVehicle(source)
     local identifier = playerIdentifier(source)
 
     if not identifier then return nil end
 
-    return spawnFor(source, identifier, stored[identifier])
+    local netId = spawnFor(source, identifier, stored[identifier])
+
+    if netId == 'pending' then return nil end
+
+    return netId
 end
 
 -- ---------------------------------------------------------------------------
@@ -345,10 +430,20 @@ RegisterNetEvent('fk_house:server:garage:spawn', function()
         return reply(source, 'You have no car saved in the garage. Park one first.')
     end
 
-    local netId, reason = spawnFor(source, identifier, entry)
+    local netId = spawnFor(source, identifier, entry)
+
+    -- The game is still confirming the entity: the client gets the net id as
+    -- soon as it registers, so there is nothing to report.
+    if netId == 'pending' then return end
 
     if not netId then
-        return reply(source, ('Your %s could not be spawned (%s).'):format(entry.model, tostring(reason)))
+        local now = os.time()
+
+        -- A retry loop must not turn one failure into a wall of red chat.
+        if (now - (lastFailure[source] or 0)) < 15 then return end
+
+        lastFailure[source] = now
+        reply(source, 'Your car could not be spawned. Try /carreset.')
     end
 end)
 
@@ -386,11 +481,13 @@ RegisterNetEvent('fk_house:server:garage:park', function(netId, modelName, plate
         return reply(source, 'Could not read that vehicle model.')
     end
 
+    hash = Garage.normalizeHash(hash)
+
     local model = Garage.normalizeModel(modelName)
 
     if not model then
         model = ('vehicle_%d'):format(math.floor(hash))
-    elseif GetHashKey(model) ~= hash then
+    elseif Garage.normalizeHash(GetHashKey(model)) ~= hash then
         warn(('%s sent "%s" for a vehicle with hash %s — storing the hash.')
             :format(tostring(identifier), tostring(model), tostring(math.floor(hash))))
     end
@@ -436,11 +533,20 @@ RegisterNetEvent('fk_house:server:garage:park', function(netId, modelName, plate
         DeleteEntity(previous.entity)
     end
 
-    live[source] = { entity = entity, netId = math.floor(net), identifier = identifier, nextTry = 0 }
+    live[source] = {
+        entity = entity,
+        netId = math.floor(net),
+        identifier = identifier,
+        pending = false,
+        nextTry = 0,
+    }
     stored[identifier] = entry
 
     save()
 
+    -- Let the client re-track the car it just parked (it keeps the personal
+    -- vehicle flags on it), then refresh the card.
+    TriggerClientEvent('fk_house:client:garage:spawned', source, math.floor(net), Garage.publicView(entry))
     TriggerClientEvent('fk_house:client:garage:state', source, Garage.publicView(entry))
     reply(source, ('Parked your %s. It will be waiting in the garage next time you log in.')
         :format(entry.model))
@@ -490,7 +596,7 @@ CreateThread(function()
                 local source = tonumber(id)
                 local entry = source and live[source]
 
-                if entry and entry.identifier then
+                if entry and entry.identifier and not entry.pending then
                     local alive = entry.entity and entry.entity ~= 0 and DoesEntityExist(entry.entity)
 
                     if not alive and (not entry.nextTry or entry.nextTry <= now) then

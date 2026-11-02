@@ -14,7 +14,8 @@ local liveNet = nil        -- net id of the car we are tracking
 local liveEntity = 0
 local lastVehicle = 0      -- vehicle we last sat in
 local wasInGarage = false  -- were we inside the garage when we got in?
-local spawnAsked = false
+local spawnAskedAt = 0     -- GetGameTimer() of the last automatic spawn request
+local announceSpawned = false -- has the player been told the car is out this session
 local doorOpen = nil
 
 local function cfg()
@@ -284,6 +285,12 @@ function GarageAction(option)
     local action = type(option) == 'table' and option.action or nil
 
     if action == 'garage_spawn' then
+        -- The server confirms with the net id a moment later; say so now so the
+        -- card never looks like it did nothing.
+        if saved and not liveNet then
+            notify(('Bringing your %s out…'):format(saved.model or 'car'))
+        end
+
         TriggerServerEvent('fk_house:server:garage:spawn')
     elseif action == 'garage_park' then
         parkVehicle(nearestVehicle())
@@ -357,12 +364,15 @@ CreateThread(function()
     while true do
         Wait(3000)
 
-        if saved and not spawnAsked then
+        -- Ask at most every 30 s. The server answers with the net id when the
+        -- car is out (or with a one-off message when it truly failed), so a
+        -- retry loop here must not turn into a wall of red chat.
+        if saved and (GetGameTimer() - spawnAskedAt) > 30000 then
             local coords = GetEntityCoords(PlayerPedId())
             local distance = House.distance(coords, garageCoords())
 
             if distance and distance <= (cfg().spawnDistance or 80.0) then
-                spawnAsked = true
+                spawnAskedAt = GetGameTimer()
                 TriggerServerEvent('fk_house:server:garage:spawn')
             end
         end
@@ -453,13 +463,16 @@ end)
 -- ---------------------------------------------------------------------------
 
 RegisterNetEvent('fk_house:client:garage:state', function(state)
+    local previous = saved
     saved = type(state) == 'table' and state or nil
 
     if not saved then
         liveNet = nil
         liveEntity = 0
-    else
-        spawnAsked = false
+        spawnAskedAt = 0
+    elseif not previous or previous.model ~= saved.model or previous.plate ~= saved.plate then
+        -- A different car is stored now, so it is worth bringing it out at once.
+        spawnAskedAt = 0
     end
 
     -- Keep an open garage card in step with what the server just said.
@@ -469,8 +482,15 @@ end)
 RegisterNetEvent('fk_house:client:garage:spawned', function(netId, state)
     if type(state) == 'table' then saved = state end
 
+    spawnAskedAt = GetGameTimer()
+
     if type(netId) == 'number' then
         trackVehicle(netId)
+
+        if not announceSpawned then
+            announceSpawned = true
+            notify(('Your %s is in the garage.'):format(saved and saved.model or 'car'))
+        end
     end
 
     if type(HouseRefreshMenu) == 'function' then HouseRefreshMenu() end

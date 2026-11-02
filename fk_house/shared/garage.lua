@@ -50,6 +50,22 @@ function Garage.normalizePlate(value)
     return plate
 end
 
+--- Model hashes are 32-bit and arrive from the game as a *signed* integer, so
+--- an add-on car can legitimately be negative. Normalise to unsigned once, in
+--- one place, or the same car compares unequal to itself.
+--- @return number|nil hash between 1 and 4294967295
+function Garage.normalizeHash(value)
+    local hash = House.toNumber(value)
+
+    if not hash then return nil end
+
+    hash = math.floor(hash) % 4294967296
+
+    if hash == 0 then return nil end
+
+    return hash
+end
+
 --- @return boolean
 function Garage.isBlocked(model, list)
     if type(model) ~= 'string' then return false end
@@ -81,12 +97,7 @@ function Garage.normalizeVehicle(entry)
     end
 
     local w = House.toNumber(entry.w) or 0.0
-    local hash = House.toNumber(entry.hash)
-
-    if hash then
-        hash = math.floor(hash)
-        if hash <= 0 or hash > 4294967295 then hash = nil end
-    end
+    local hash = Garage.normalizeHash(entry.hash)
 
     return {
         model = model,

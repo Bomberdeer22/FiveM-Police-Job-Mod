@@ -448,6 +448,18 @@ still comes back as the same model, and a client cannot claim it is a different 
 `Config.Garage.blockedModels` (matched by hash) refuses cars like a tank.
 `garage_list` in the server console prints everything that is stored.
 
+Spawn hashes are compared as unsigned 32-bit numbers everywhere, so a record written by
+an older build (where the hash could be negative) still returns the same car instead of
+being refused.
+
+The car is created by the server, and a freshly created entity is not registered on the
+same tick — `DoesEntityExist` is still false for a moment. The spawn therefore **does not
+treat that moment as a failure**: it marks the car as *pending*, keeps the request
+open, and a background check retries every 100 ms for up to 5 s. Only if the entity never
+appears is it cleaned up and you get a chat line (at most once every 15 s). While a car is
+pending, further requests reuse it rather than creating a second one, so you never end up
+with a stack of cars in the garage.
+
 ### Configuration
 
 | Key | Default | What it does |
@@ -576,7 +588,7 @@ Consumables, services and vehicles are *not* stored (they are used at the till);
 
 `.github/workflows/tests.yml` runs `npm run check` on every push and pull request: it
 compiles all 25 Lua files with fengari (`tools/lint-lua.js`), then runs the five test
-suites (357 checks) against a real Lua VM and jsdom.
+suites (365 checks) against a real Lua VM and jsdom.
 
 ---
 
@@ -603,7 +615,7 @@ with mocked FiveM natives, and the NUI page runs in jsdom.
 
 ```bash
 npm install
-npm run check   # lint every Lua file + all 357 checks
+npm run check   # lint every Lua file + all 365 checks
 ```
 
 * **123 economy checks** — starting balances, overdraft refusal, invalid
@@ -622,12 +634,15 @@ npm run check   # lint every Lua file + all 357 checks
   preset saving, staff selection, give/take confirmation, toasts, price list,
   delta pills, hidden-HUD behaviour.
 * **14 preview checks** — the `preview/` harness boots and drives the same UI.
-* **132 house checks** — the six spots and their types, coordinates checked against
+* **140 house checks** — the six spots and their types, coordinates checked against
   the game's own interior data (each spot must land in its room and on its floor),
   floor-aware nearest-spot lookup, 3D distance, spot validation, `/housespot` / `house_spot` / `house_reset`, staff gating,
   `spots.json` persistence across a restart, outfit validation and per-licence storage,
   kitchen purchases through the economy (success, refusal, unknown item, no economy),
-  and the NUI card in jsdom (rows, hints, show/hide, Lua messages).
+  unsigned model-hash handling (a negative stored hash still spawns the same car), the
+  slow-registration regression (a car that is not there yet is not "failed", is announced
+  when it appears, and is never created twice), and the NUI card in jsdom (rows, hints,
+  show/hide, Lua messages).
 * **55 spawn checks** — the bedroom point and its interior, name lookup (case/space
   insensitive), coordinate parsing from strings and tables, bounds/NaN rejection,
   save/load of `spawns.json`, `spawn_set` / `spawn_reset` / `spawnlist`, the staff
@@ -650,6 +665,7 @@ npm run check   # lint every Lua file + all 357 checks
 | **Staff tab missing** | Run `/ecoaccess` in game (or `eco_check &lt;id&gt;` in the console) — it prints whether access was granted and by what. Add the player with `/ecostaff add <id>` (or `eco_staff add <id>` in the console). |
 | **Player does not wake up in the bedroom on join** | Everything needed is visible **in chat**: on a successful join you get `Waking you up in Michael's bedroom…`; `/spawnstatus` prints the resource version, the points it received, the pending flag and your coordinates. `/spawn` forces a spawn (if that works, the spawn logic is fine and only the join trigger is at fault). On the **server** console look for `[fk_spawn] Ready (v…)`, `Player N (name) spawned at michael_bedroom`, and `player N never confirmed the join spawn` (means the client never acknowledged — check that the player's client has the same `fk_spawn` version). No `Ready` line at all = the resource is not running: `ensure fk_spawn` after `ensure fk_economy`. |
 | **No prompt inside the house** | Run `/housedebug` first — it prints, in chat: how many spots the client received, whether you are inside the house radius, which spots are near you (and within what radius), whether the UI page answered, and whether a menu is open. Then `/housemarkers` (staff) draws a marker **on the floor** at every spot, and `/housespot <name>` saves your position. If `/housedebug` says `spots=0`, the client never got the list — check the server console. |
+| **Chat: the car "could not be spawned" — but the car is right there, and a new one keeps appearing** | Fixed in v0.3.1: a server-created vehicle is not registered on the tick it is made, so the old check called that a failure and the next request made another car. Update `fk_house` and `restart fk_house`. If it still happens, the server console prints `[fk_house] gave up spawning <model>` with the reason. |
 | **My car did not come back** | `/mycar` in chat prints what is stored and where the car is. If the record is empty, the car was never parked inside `Config.Garage.coords`/`radius` — drive it in, get out, and look for the "Parked your …" line. The console `garage_list` command lists every stored car. | Every default coordinate was measured from the interior's own MLO data — [`docs/COORDINATES.md`](docs/COORDINATES.md) lists the props each one is anchored to and the maths behind it. If your build differs, `/housescan` prints your position, floor height, interior id and room hash in chat, and `/housetune <spot>` saves a spot without editing files. |
 | **`Could not write data/…json`** | `SaveResourceFile` cannot create folders: the resource needs a `data` directory next to `fxmanifest.lua`. Every resource ships one with a `.gitkeep`; if you copied files by hand, create `fk_house/data` (and `fk_spawn/data`) yourself and restart. |
 | **Nothing happens when I press E** | Check the spot's `type` in `config.lua` — only `wardrobe`, `kitchen`, `shower`, `bed` and `sofa` have actions. The card should list at least one option; if the spot has no options you get "Nothing to do here yet." |
