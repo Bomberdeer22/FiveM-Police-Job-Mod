@@ -1,0 +1,25 @@
+# Runtime economy data (created by the server, do not commit player balances)
+fk_economy/data/accounts.json
+fk_economy/data/accounts.*.json
+fk_economy/data/transactions.log
+fk_economy/data/staff.json
+fk_economy/data/*.tmp
+
+# Runtime spawn positions (written by /spawnset)
+fk_spawn/data/spawns.json
+fk_spawn/data/spawns.*.json
+fk_spawn/data/*.tmp
+
+# Runtime house data (spot positions moved in game, personal outfits, cars)
+fk_house/data/*.json
+fk_house/data/*.tmp
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Test tooling
+node_modules/
+package-lock.json

@@ -1,0 +1,16 @@
+{
+  "name": "fivem-police-job-mod",
+  "version": "0.1.0",
+  "private": true,
+  "description": "FiveM police job mod \u2014 economy (fk_economy), spawn manager (fk_spawn), Michael's house (fk_house) plus dev tooling",
+  "scripts": {
+    "test": "node tests/lua-money.test.js && node tests/spawn.test.js && node tests/house.test.js && node tests/nui.test.js && node tests/preview.test.js",
+    "lint": "node tools/lint-lua.js",
+    "check": "node tools/lint-lua.js && node tests/lua-money.test.js && node tests/spawn.test.js && node tests/house.test.js && node tests/nui.test.js && node tests/preview.test.js",
+    "preview": "python3 -m http.server 8000"
+  },
+  "devDependencies": {
+    "fengari": "^0.1.4",
+    "jsdom": "^24.0.0"
+  }
+}
