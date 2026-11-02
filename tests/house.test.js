@@ -914,7 +914,7 @@ const garageCoords = garageCfg.coords || {};
 const garageSpawn = garageCfg.spawn || {};
 
 check('the garage is configured on the garage floor',
-  Math.abs(garageCoords.x + 810.53) < 0.1 && Math.abs(garageCoords.y - 187.79) < 0.1,
+  Math.abs(garageCoords.x + 811.33) < 0.1 && Math.abs(garageCoords.y - 187.51) < 0.1,
   garageCoords);
 check('the car has a spawn point inside the garage',
   Math.abs(garageSpawn.x - garageCoords.x) < 2 && Math.abs(garageSpawn.y - garageCoords.y) < 2,
@@ -928,10 +928,10 @@ const garageSpot = (spots || []).find((spot) => spot.name === 'garage');
 check('there is a garage interaction spot',
   !!garageSpot && garageSpot.type === 'garage', garageSpot);
 check('the garage spot is inside the garage interior',
-  !!garageSpot && Math.abs(garageSpot.x + 810.53) < 1.0 && Math.abs(garageSpot.y - 187.79) < 1.0,
+  !!garageSpot && Math.abs(garageSpot.x + 811.33) < 1.0 && Math.abs(garageSpot.y - 187.51) < 1.0,
   garageSpot);
 check('the garage spot sits on the garage floor',
-  !!garageSpot && Math.abs(garageSpot.z - 71.48) < 0.35, garageSpot && garageSpot.z);
+  !!garageSpot && Math.abs(garageSpot.z - 71.47) < 0.35, garageSpot && garageSpot.z);
 
 check('model names are lower-cased and trimmed',
   luaCallGlobal('Garage.normalizeModel', ['  Adder '])[0] === 'adder');

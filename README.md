@@ -401,7 +401,7 @@ Console equivalents: `house_spot <name> <x> <y> <z>` and `house_reset <name>`.
 | `shower` | shower | family bathroom, `-804.60, 169.90, 75.80` |
 | `kitchen` | kitchen | kitchen at the back of the house, `-800.00, 185.60, 71.85` |
 | `livingroom` | sofa | lounge, `-803.60, 174.40, 71.85` |
-| `garage` | garage | Michael's garage, `-810.53, 187.79, 71.48` |
+| `garage` | garage | Michael's garage (its own interior), `-811.33, 187.51, 71.47` |
 
 Those numbers are measured from the game's interior data, not guessed — see
 [`docs/COORDINATES.md`](docs/COORDINATES.md) for how each one was derived.
@@ -447,8 +447,8 @@ still comes back as the same model, and a client cannot claim it is a different 
 | `Config.Sleep.timeAdvanceEvent` | `nil` | Set to your time-sync event to advance server time instead of the local clock |
 | `Config.Sleep.wakeMessage` | – | Chat line when you wake up |
 | `Config.UI` | – | Card footer text and whether the `[E]` prompt shows |
-| `Config.Garage.coords` / `radius` | garage floor, 6 m | Where a car must be for it to be saved, and where it is put back |
-| `Config.Garage.spawn` | `-810.53, 187.79, 71.70` | Exact spawn point and heading inside the garage |
+| `Config.Garage.coords` / `radius` | `-811.33, 187.51, 71.47`, 6 m | Where a car must be for it to be saved, and where it is put back |
+| `Config.Garage.spawn` | `-811.33, 187.51, 71.70`, heading 90 | Exact spawn point and heading inside the garage |
 | `Config.Garage.cullDistance` | `4000.0` | Personal-vehicle culling radius — the car is never treated as abandoned |
 | `Config.Garage.respawn` / `respawnDelay` | `true` / `5000` | Re-create the car in the garage if the entity ever disappears |
 | `Config.Garage.blockedModels` | `{}` | Model names that may not be stored (matched by hash, so a fake name does not help) |

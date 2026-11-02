@@ -107,12 +107,13 @@ Config.Spots = {
         name = 'garage',
         label = 'Garage',
         type = 'garage',
-        -- Michael's garage is its own interior (v_michael_garage) on the north
-        -- side of the house; the game's own point inside it is
-        -- (-810.53, 187.79, 71.48) and the door is prop_ld_garaged_01 at
-        -- (-815.33, 185.96, 72.99). That floor is ~0.35 m below the rest of
-        -- the ground floor.
-        coords = { x = -810.53, y = 187.79, z = 71.48 },
+        -- Michael's garage is its own MLO (v_michael_garage) on the north side
+        -- of the house. mloInteriors.json places it at
+        -- (-811.33276, 187.51263, 71.47429); building_controller.c puts the
+        -- door (prop_ld_garaged_01) at (-815, 186, 73). The garage floor is
+        -- ~0.38 m below the rest of the ground floor, because it is a
+        -- different interior with its own origin.
+        coords = { x = -811.33, y = 187.51, z = 71.47 },
         radius = 4.5,
     },
 }
@@ -130,11 +131,15 @@ Config.Garage = {
     enabled = true,
     file = 'data/garage.json',
 
-    -- The garage floor. The car is only saved when it is inside this radius and
-    -- is put back here on login.
-    coords = { x = -810.53, y = 187.79, z = 71.48 },
+    -- The garage floor: the placement of the v_michael_garage MLO in
+    -- mloInteriors.json (-811.33276, 187.51263, 71.47429), which is also where
+    -- the house's own V_44_Garage_Shell sits (-811.23, 187.34) and ~4 m from
+    -- the game's garage door. The car is only saved inside this radius and is
+    -- put back here on login.
+    coords = { x = -811.33, y = 187.51, z = 71.47 },
     radius = 6.0,
-    spawn = { x = -810.53, y = 187.79, z = 71.70, w = 110.0 },
+    -- Heading 90 faces west, towards the door on the -x side of the garage.
+    spawn = { x = -811.33, y = 187.51, z = 71.70, w = 90.0 },
 
     -- Spawn the car once the player is this close to the garage (so the
     -- interior collision is streamed in before the car appears).
@@ -149,8 +154,9 @@ Config.Garage = {
     -- Michael's garage door. Turn this off if another resource drives it.
     door = {
         enabled = true,
+        -- building_controller.c, case 40: prop_ld_garaged_01 at (-815, 186, 73)
         model = 'prop_ld_garaged_01',
-        coords = { x = -815.3282, y = 185.9571, z = 72.99 },
+        coords = { x = -815.0, y = 186.0, z = 73.0 },
         openWithin = 12.0,
     },
 

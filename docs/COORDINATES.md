@@ -76,7 +76,7 @@ The fitted origin came out as `-807.343, 174.981` — identical to the MLO place
 | **Kitchen** | fridges -804.12, 185.81 and -802.83, 186.30; hob -799.80, 187.80; sink -796.14, 186.84; coffee machine -796.73, 188.28 | centre ≈ **-800, 185.6** |
 | **Lounge** | lounge anchor -803.38, 174.44; projector -804.49, 171.94; sofa seats -804.37, 176.86 / -802.40, 175.85 / -806.60, 173.40 | centre ≈ **-803.6, 174.4** |
 | Dining | `V_44_Dine_Detail` | -796.61, 180.40 |
-| Garage | `V_44_Garage_Shell` | -811.23, 187.34 |
+| **Garage** | `V_44_Garage_Shell` (house MLO) -811.23, 187.34; `v_michael_garage` MLO placed at -811.33276, 187.51263, **71.47429**; door `prop_ld_garaged_01` -815, 186, 73 | centre ≈ **-811.33, 187.51**, floor **z 71.47** |
 | **Master bedroom** | room anchor -812.71, 178.40; `np_h_44_1_Master_Deca` -813.09, 179.65; chandelier -814.21, 180.93; balcony doors -817.17, 178.01 | centre ≈ **-813.2, 179.2** |
 | **Master dressing room** | wardrobe shell `V_44_1_Master_Ward` -813.95, 174.30; shelves -811.29, 175.32; clothes rail -811.26, 176.32 | centre ≈ **-812.6, 175.2** |
 | Family bathroom | sink -804.46, 169.07; mirror -804.71, 169.00; WC door -805.00, 171.90 | centre ≈ **-804.6, 169.9** |
@@ -88,7 +88,7 @@ The master suite is above the front door: bedroom to the north (balcony over the
 driveway), dressing room to the south. The family bathroom is the room behind the
 `v_ilev_mm_doorw` door the Cfx forum lists at -804.95, 171.86, 76.89.
 
-## 5. The five spots as shipped
+## 5. The six spots as shipped
 
 | Spot | x, y, z | Radius | Anchored to |
 | --- | --- | --- | --- |
@@ -97,6 +97,7 @@ driveway), dressing room to the south. The family bathroom is the room behind th
 | `shower` | -804.60, 169.90, 75.80 | 2.6 | family bathroom: sink, mirror, towels, shampoo |
 | `kitchen` | -800.00, 185.60, 71.85 | 4.5 | between the fridges, the hob and the sink |
 | `livingroom` | -803.60, 174.40, 71.85 | 4.0 | lounge sofa and projector |
+| `garage` | -811.33, 187.51, 71.47 | 4.5 | `v_michael_garage` MLO placement + `V_44_Garage_Shell` |
 
 `Config.House.coords` is the MLO origin and `radius` is 30 m, which covers the house,
 the garage, the balcony and the pool terrace but not the street.
@@ -135,3 +136,30 @@ If anything still looks off on your build, you do not need to edit files:
 The room hash in `/housescan` is the game's own room key for the MLO room you are
 standing in, so a single screenshot of that line identifies the room even if the
 coordinates are off.
+
+## 6. The garage (a second interior, and a different floor height)
+
+The garage is **not** part of the `v_michael` MLO — it is a separate archetype
+`v_michael_garage` inside the same `v_int_44.ytyp`, with its own placement:
+
+| Fact | Value | Source |
+| --- | --- | --- |
+| `v_michael_garage` placement | `-811.33276, 187.51263, 71.47429` | `mloInteriors.json` (DurtyFree/gta-v-data-dumps) |
+| `v_michael_garage` rooms | `V_Michael_G_Garage`, `V_Michael_G_Corridor`, `limbo` | `v_int_44_empty.ytyp.xml` (X3P0/nopixel-3.0) |
+| Garage shell in the house MLO | `V_44_Garage_Shell` at local `0.799, 12.930, 2.160` → world `-811.23, 187.34, 73.34` | ytyp + the same 21° fit |
+| Garage door | `prop_ld_garaged_01` at `-815, 186, 73` (search radius 6.5 m) | `building_controller.c`, case 40 |
+
+Two consequences that matter:
+
+* **The garage floor is z 71.474, not 71.85.** It is a different interior with its own
+  placement, and its local floor is `z ≈ 0`, so it sits ~0.38 m below the house's ground
+  floor. A car spawned at 71.85 would hover; `Config.Garage.spawn` uses 71.70 and lets the
+  car settle.
+* **The garage centre is the MLO placement**, which lands within 0.2 m of the house's own
+  `V_44_Garage_Shell` (-811.23, 187.34) and ~4 m from the script door (-815, 186) — three
+  independent sources agreeing, which is why it is the shipped point.
+
+The room's bounding box is large (~11 m) and L-shaped, so the bounding-box centre is not
+used; the placement origin (a point both interiors agree on) is.
+
+The spawn heading is `90` (west), towards the door on the -x side.
