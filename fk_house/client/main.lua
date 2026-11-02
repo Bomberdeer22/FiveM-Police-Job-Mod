@@ -414,6 +414,7 @@ RegisterNetEvent('fk_house:client:buyResult', function(ok, reason, item)
             insufficient_funds = 'You cannot afford that.',
             unknown_item = 'That is not for sale.',
             economy_error = 'The till is broken, try again.',
+            rate_limited = 'One at a time — the till needs a second.',
         }
 
         return notify(messages[reason] or 'You cannot buy that right now.')
