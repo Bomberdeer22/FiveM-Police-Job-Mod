@@ -748,7 +748,10 @@ dom.window.mdt.close();
 // --- MDT bundle ------------------------------------------------------------
 
 const pageBundle = {
-  status: { onDuty: true, rank: 'Sergeant', xp: 1500, citations: 4, arrests: 2, callsign: '1-ADAM-12' },
+  status: {
+    onDuty: true, rank: 'Sergeant', xp: 1500, citations: 4, arrests: 2, callsign: '1-ADAM-12',
+    medals: [{ label: 'Meritorious Service', blurb: '500 XP on the job', xp: 500 }],
+  },
   progress: { rank: 'Sergeant', percent: 55 },
   shift: { active: true, seconds: 5400, counters: { citations: 3, arrests: 1, callouts: 2, reports: 1, fines: 3, backups: 0 }, projected: { pay: 900 } },
   charges: [{ id: 'speeding', label: 'Speeding', fine: 250, jail: 0, type: 'infraction' }],
@@ -770,6 +773,8 @@ const pageBundle = {
   impounds: [{ id: 'IMP-1', plate: 'OWEN555', model: 'schafter2', reason: 'stolen recovery', fee: 1250, released: false }],
   shifts: [{ id: 'SHIFT-1', seconds: 3600, citations: 2, arrests: 1, callouts: 1, pay: 1200 }],
   pursuits: [{ id: 'PUR-1', seconds: 240, outcome: 'arrested', plate: 'OWEN555' }],
+  verdicts: [{ id: 'VRD-1', person: 'Ellis Roan', booking: 'BOOK-1', outcome: 'guilty', refund: 0 }],
+  evidence: [{ id: 'EVD-1', person: 'Owen Pike', kind: 'frisk', items: [{ label: 'Pistol', qty: 1 }], at: '2026-11-03T10:00:00Z' }],
   department: { balance: 4200, label: 'LSPD court fund' },
   pursuit: { active: false },
   callout: false,
@@ -797,6 +802,12 @@ check('the MDT renders the shift counters',
   /1h 30m/.test(text('shift-cards')) && /900/.test(text('shift-cards')), text('shift-cards'));
 check('the MDT renders the shift and pursuit history',
   /SHIFT-1/.test(text('shift-body')) && /PUR-1/.test(text('pursuit-body')));
+check('the MDT shows the medals that were earned',
+  /Meritorious Service/.test(text('medal-list')), text('medal-list'));
+check('the MDT renders the court docket',
+  /VRD-1/.test(text('verdict-body')) && /guilty/.test(text('verdict-body')), text('verdict-body'));
+check('the MDT renders the evidence locker',
+  /Owen Pike/.test(text('evidence-body')) && /Pistol x1/.test(text('evidence-body')), text('evidence-body'));
 check('the MDT renders the backup buttons from the config',
   /Code 3|code3/.test(text('backup-grid')), text('backup-grid'));
 
@@ -1257,6 +1268,165 @@ check('bookings are written to the records', bookingsRaw.includes('Ellis Roan'),
 check('the custody state is in the MDT bundle',
   'custody' in (exp(jailHost, 'GetMdt', [1]) || {}));
 
+// --- the car is actually taken off the street -------------------------------
+
+check('impounding tells the client to remove the car',
+  impoundHost.captured.client.some((event) => event.name === 'fk_police:client:impound'
+    && event.args.plate === 'OWEN555'), impoundHost.captured.client.length);
+
+// --- the court rules when custody ends -------------------------------------
+
+const courtHost = dutied();
+
+courtHost.callExport('StartStop', [1, 'ELLIS3', 'buffalo']);
+courtHost.callExport('Arrest', [1, ['assault']]);
+const courtBooking = exp(courtHost, 'BookSuspect', [1]);
+const courtRelease = exp(courtHost, 'ReleaseSuspect', [1, 'bail']);
+
+check('releasing a suspect produces a verdict',
+  ['guilty', 'acquitted'].includes(courtRelease.verdict), courtRelease);
+check('the verdict is on the docket',
+  (exp(courtHost, 'ListVerdicts', []) || []).length === 1, exp(courtHost, 'ListVerdicts', []));
+check('the verdict is tied to the booking',
+  (exp(courtHost, 'ListVerdicts', []) || [])[0].booking === courtBooking.id,
+  exp(courtHost, 'ListVerdicts', []));
+check('the verdict is written onto the booking',
+  /"verdict":"(guilty|acquitted)"/.test(
+    courtHost.luaDo('return json.encode(fkExport("GetRecords").bookings[1])', '@booking') || ''),
+  courtHost.luaDo('return json.encode(fkExport("GetRecords").bookings[1])', '@booking'));
+
+const verdictTwice = courtHost.luaDo(
+  'return Mdt.verdict(Config, "BOOK-FIXED", 0.72) == Mdt.verdict(Config, "BOOK-FIXED", 0.72)', '@verdict');
+check('the same booking always gets the same verdict', verdictTwice === true, verdictTwice);
+check('a high chance is not an acquittal',
+  courtHost.luaDo('return Mdt.verdict(Config, "BOOK-FIXED", 2)', '@verdict') === 'guilty');
+check('a zero chance is always an acquittal',
+  courtHost.luaDo('return Mdt.verdict(Config, "BOOK-FIXED", 0)', '@verdict') === 'acquitted');
+
+// A court that never convicts: the fine goes back and the fund is debited.
+const acquitHost = dutied({ patch: 'Config.Justice.verdictChance = 0' });
+
+acquitHost.callExport('StartStop', [1, 'ELLIS3', 'buffalo']);
+acquitHost.callExport('Cite', [1, ['speeding']]);
+const fineBefore = (exp(acquitHost, 'ListFines', [{}]) || []).find((fine) => fine.person === 'Ellis Roan');
+
+// Put some money in the court fund so the refund is a real debit, not a clamp.
+acquitHost.callExport('StartStop', [1, 'MARCUS1', 'sultan']);
+acquitHost.callExport('Cite', [1, ['reckless_driving']]);
+const marcusFine = (exp(acquitHost, 'ListFines', [{}]) || []).find((fine) => fine.person === 'Marcus Vance');
+exp(acquitHost, 'CollectFine', [1, marcusFine.id]);
+const fundBefore = (exp(acquitHost, 'GetMdt', [1]) || {}).department.balance;
+acquitHost.callExport('StartStop', [1, 'ELLIS3', 'buffalo']);
+acquitHost.callExport('Arrest', [1, ['assault']]);
+exp(acquitHost, 'BookSuspect', [1]);
+const acquittal = exp(acquitHost, 'ReleaseSuspect', [1, 'no evidence']);
+
+if (false) console.log('DBG acquit', JSON.stringify({ acquittal, fineBefore, fundBefore, fines: exp(acquitHost, 'ListFines', [{}]) }));
+check('an acquittal is reported to the officer', acquittal.verdict === 'acquitted', acquittal);
+check('an acquittal refunds the fine', acquittal.refund === fineBefore.owed,
+  { refund: acquittal.refund, fine: fineBefore.owed });
+check('the court fund had the money to give back', fundBefore >= fineBefore.owed, fundBefore);
+check('the refunded fine is waived, not paid',
+  ((exp(acquitHost, 'ListFines', [{}]) || []).find((fine) => fine.id === fineBefore.id) || {}).status === 'waived',
+  exp(acquitHost, 'ListFines', [{}]));
+check('the court fund is debited by the refund',
+  ((exp(acquitHost, 'GetMdt', [1]) || {}).department.balance) === fundBefore - fineBefore.owed,
+  { before: fundBefore, after: (exp(acquitHost, 'GetMdt', [1]) || {}).department.balance });
+
+// --- evidence --------------------------------------------------------------
+
+const evidenceHost = dutied();
+
+evidenceHost.callExport('StartStop', [1, 'OWEN555', 'schafter2']);
+const friskResult = exp(evidenceHost, 'Frisk', [1, 'Owen Pike']);
+const seized = exp(evidenceHost, 'ListEvidence', ['Owen Pike']) || [];
+
+check('a frisk that finds something is logged as evidence',
+  friskResult.items.length === 0 || seized.length === 1, { found: friskResult.items.length, seized: seized.length });
+check('the evidence names what was seized',
+  seized.length === 0 || (seized[0].items[0] && seized[0].items[0].label), seized[0]);
+check('evidence is kept per person',
+  (exp(evidenceHost, 'ListEvidence', ['Marcus Vance']) || []).length === 0,
+  exp(evidenceHost, 'ListEvidence', ['Marcus Vance']));
+
+evidenceHost.callExport('StartStop', [1, 'ELLIS3', 'buffalo']);
+evidenceHost.callExport('Arrest', [1, ['assault', 'burglary']]);
+exp(evidenceHost, 'BookSuspect', [1]);
+const bookingEvidence = exp(evidenceHost, 'ListEvidence', ['Ellis Roan']) || [];
+if (false) console.log('DBG evidence', JSON.stringify({ bookingEvidence, arrests: exp(evidenceHost, 'GetRecords') }));
+check('booking a suspect files the charges as evidence',
+  bookingEvidence.some((item) => item.kind === 'booking' && item.items.length === 2), bookingEvidence);
+check('evidence survives a restart',
+  (exp(dutied({ files: { 'data/records.json': evidenceHost.filesystem['data/records.json'] } }),
+    'ListEvidence', ['Ellis Roan']) || []).length === bookingEvidence.length);
+
+// --- callsigns -------------------------------------------------------------
+
+const callHost = dutied();
+
+callHost.runCommand('callsign', 1, ['3', 'adam', '9']);
+const called = exp(callHost, 'GetStatus', [1]) || {};
+
+check('a callsign can be set on duty', called.callsign === '3-ADAM-9', called.callsign);
+if (false) console.log('DBG callsign', JSON.stringify(callHost.captured.logs.slice(-4)));
+check('the callsign is announced in chat',
+  callHost.notes().some((line) => /Callsign (set to|changed from .* to) 3-ADAM-9/.test(line)),
+  callHost.notes().slice(-3));
+
+callHost.runCommand('callsign', 1, ['!']);
+check('a nonsense callsign is refused', (exp(callHost, 'GetStatus', [1]) || {}).callsign === '3-ADAM-9',
+  (exp(callHost, 'GetStatus', [1]) || {}).callsign);
+check('callsigns are normalised',
+  callHost.luaDo('return Mdt.normalizeCallsign("  7  lincoln  21 ")', '@callsign') === '7-LINCOLN-21',
+  callHost.luaDo('return Mdt.normalizeCallsign("  7  lincoln  21 ")', '@callsign'));
+
+const callReload = dutied({ files: { 'data/records.json': callHost.filesystem['data/records.json'] } });
+callReload.fireNet('fk_police:server:duty', 1, [true]);
+check('the callsign survives a restart',
+  (exp(callReload, 'GetStatus', [1]) || {}).callsign === '3-ADAM-9',
+  (exp(callReload, 'GetStatus', [1]) || {}).callsign);
+
+// --- medals ----------------------------------------------------------------
+
+check('no medals at zero XP',
+  (courtHost.luaDo('return #Mdt.medalsFor(Config, 0)', '@medal') || 0) === 0);
+check('two medals at 1,600 XP',
+  (courtHost.luaDo('return #Mdt.medalsFor(Config, 1600)', '@medal') || 0) === 2);
+check('every medal at 5,000 XP',
+  courtHost.luaDo('return #Mdt.medalsFor(Config, 5000)', '@medal')
+    === courtHost.luaDo('return #Config.Medals', '@medal')
+    && (courtHost.luaDo('return #Config.Medals', '@medal') || 0) >= 3,
+  courtHost.luaDo('return #Mdt.medalsFor(Config, 5000)', '@medal'));
+check('the status carries the medals that were earned',
+  Array.isArray((exp(courtHost, 'GetStatus', [1]) || {}).medals),
+  (exp(courtHost, 'GetStatus', [1]) || {}).medals);
+
+// --- the new sections in the bundle ---------------------------------------
+
+const waveBundle = exp(courtHost, 'GetMdt', [1]) || {};
+
+check('the bundle carries verdicts and evidence',
+  Array.isArray(waveBundle.verdicts) && Array.isArray(waveBundle.evidence),
+  [typeof waveBundle.verdicts, typeof waveBundle.evidence]);
+check('the bundle shows the docket newest first',
+  waveBundle.verdicts.length === 0 || waveBundle.verdicts[0].booking === courtBooking.id,
+  waveBundle.verdicts);
+
+// --- /verdict and /evidence work from chat --------------------------------
+
+courtHost.runCommand('verdict', 1, ['3']);
+const verdictNotes = courtHost.notes();
+check('the verdict command prints the docket',
+  verdictNotes.some((line) => /Court verdicts/.test(line))
+    && verdictNotes.some((line) => /acquitted|guilty/.test(line)),
+  verdictNotes.slice(-3));
+
+evidenceHost.runCommand('evidence', 1, ['Ellis', 'Roan']);
+const evidenceNotes = evidenceHost.notes();
+check('the evidence command prints the file',
+  evidenceNotes.some((line) => /Evidence against Ellis Roan/.test(line)), evidenceNotes.slice(-3));
+
+
 // --- the /jail command is chat-only but works ------------------------------
 
 jailHost.captured.client.length = 0;
@@ -1415,7 +1585,8 @@ check('every NUI message the client sends is handled by the page',
 check('the manifest loads justice after the core',
   /server_scripts\s*\{[^}]*'server\/main\.lua'[^}]*'server\/justice\.lua'[^}]*\}/s
     .test(sources['fxmanifest.lua']), sources['fxmanifest.lua']);
-check('the manifest ships version 0.2.0', /version '0\.2\.0'/.test(sources['fxmanifest.lua']));
+check('the manifest ships version 0.3.0', /version '0\.3\.0'/.test(sources['fxmanifest.lua']),
+  (sources['fxmanifest.lua'].match(/version '[^']+'/) || [])[0]);
 check('the manifest still points at the single NUI page',
   /ui_page 'html\/index\.html'/.test(sources['fxmanifest.lua']));
 check('the key mappings cover the documented keys',

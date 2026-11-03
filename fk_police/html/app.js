@@ -445,6 +445,55 @@
     });
   }
 
+  function renderMedals(medals) {
+    const list = byId('medal-list');
+    list.innerHTML = '';
+
+    if (!medals || medals.length === 0) {
+      list.appendChild(el('div', 'row', 'No medals yet. 500 XP earns the first one.'));
+      return;
+    }
+
+    medals.forEach((medal) => {
+      const row = el('div', 'row');
+      row.appendChild(el('b', null, medal.label));
+      row.appendChild(el('span', null, medal.blurb || `${medal.xp} XP`));
+      list.appendChild(row);
+    });
+  }
+
+  function renderVerdicts(verdicts) {
+    const body = byId('verdict-body');
+    body.innerHTML = '';
+
+    (verdicts || []).forEach((verdict) => {
+      const row = el('tr');
+      row.appendChild(el('td', null, verdict.id));
+      row.appendChild(el('td', null, verdict.person || '—'));
+      row.appendChild(el('td', null, verdict.booking || '—'));
+      row.appendChild(el('td', null, verdict.outcome || '—'));
+      row.appendChild(el('td', null, verdict.refund ? money(verdict.refund) : '—'));
+      body.appendChild(row);
+    });
+  }
+
+  function renderEvidence(evidence) {
+    const body = byId('evidence-body');
+    body.innerHTML = '';
+
+    (evidence || []).forEach((item) => {
+      const row = el('tr');
+      const labels = (item.items || []).map((seized) => `${seized.label || seized.id} x${seized.qty || 1}`);
+
+      row.appendChild(el('td', null, item.id));
+      row.appendChild(el('td', null, item.person || '—'));
+      row.appendChild(el('td', null, labels.join(', ') || '—'));
+      row.appendChild(el('td', null, item.kind || '—'));
+      row.appendChild(el('td', null, item.at || '—'));
+      body.appendChild(row);
+    });
+  }
+
   function renderBackup(backup) {
     const grid = byId('backup-grid');
 
@@ -478,6 +527,9 @@
     renderShift(bundle.shift);
     renderShifts(bundle.shifts);
     renderPursuits(bundle.pursuits);
+    renderMedals(bundle.status && bundle.status.medals);
+    renderVerdicts(bundle.verdicts);
+    renderEvidence(bundle.evidence);
 
     if (bundle.department) {
       byId('fund').textContent = `${bundle.department.label || 'Court fund'} ${money(bundle.department.balance)}`;

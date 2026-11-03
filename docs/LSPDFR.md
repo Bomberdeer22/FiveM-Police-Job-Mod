@@ -92,6 +92,9 @@ rather than copied:
 | **Shifts** | LSPDFR has no economy; here the job pays a salary and per-action bonuses, so a duty session has a beginning, an end and a payslip |
 | **BOLOs with expiry** | A dispatch board that cleans itself up |
 | **Custody timer** | The sentence from the arrest is served somewhere, and you can see it on the HUD |
+| **Court verdicts** | LSPDFR never decides the case. Here every booking is ruled on when the suspect leaves custody: guilty keeps the fine, an acquittal waives it and pays it back out of the court fund (`/verdict`) |
+| **Evidence locker** | Frisks and charge sheets become exhibits with quantities and an officer (`/evidence`), so the file outlives the stop |
+| **Callsigns & medals** | `/callsign 3-ADAM-9` names you on the radio, the HUD and the MDT; `Config.Medals` awards medals at XP thresholds |
 | **Persistence** | Records, fines, warrants, reports and shifts all survive a restart (`.bak` + snapshots) |
 
 ## 4. What stays server-authoritative
@@ -100,15 +103,18 @@ Everything that touches money, records or XP lives in `fk_police/server/main.lua
 
 | Action | Server-side rule |
 | --- | --- |
+| `callsign` | 2–12 characters after normalisation (`Mdt.normalizeCallsign`), stored on the officer record |
 | `search` | Requires duty (unless `Config.Singleplayer`), rate-limited otherwise; reads the records store, never the client |
 | `stop` | Plate must be readable, the stop must be started by the officer, expires after 300 s |
 | `cite` / `arrest` | Need a live stop; charge ids are re-priced from `Config.Charges`; the fine/pay split comes from `Config.Pay` |
 | `arrest` | Clears the warrant, writes the arrest record, creates the fine, remembers the arrest for `/jail` |
 | `book` / `release` | Needs an arrest (or a live stop); the sentence is capped by `Config.Jail.maxSeconds`; the booking is written to the records |
+| verdicts | Rolled on the server from the booking id (`Mdt.verdict`, deterministic), never sent by the client; an acquittal's refund can never exceed what the fine still owes, and it is clamped at the court fund's balance |
+| evidence | Built from the server's own frisk result and the arrest's validated charges; labels and quantities are re-read server-side |
 | `fines` | Amounts and due dates are set server-side; a payment can never exceed what is owed; the court fund is server-side |
 | `warrants` / `bolos` | Validated names/plates, deduplicated, expiring; only an on-duty officer can add or clear one |
 | `reports` | Length limits and subject dedupe in `Mdt.validateReport`; unknown charge ids are dropped |
-| `impound` | Needs a live stop, one open impound per plate; the release fee is taken through `fk_economy:RemoveMoney` and only if the bank can cover it |
+| `impound` | Needs a live stop, one open impound per plate; the release fee is taken through `fk_economy:RemoveMoney` and only if the bank can cover it. The car is deleted client-side only when the plate matches and it is within 60 m |
 | `pursuit` | Needs a stop or an accepted callout; the outcome must be one of `Config.Pursuit.outcomes` |
 | `callout:resolve` | The callout must be `accepted` **and** the client must report coords within `Config.Dispatch.sceneRadius` (12 m) of the scene |
 | money | Only through `exports['fk_economy']:AddMoney(source, 'bank', n, reason)` |

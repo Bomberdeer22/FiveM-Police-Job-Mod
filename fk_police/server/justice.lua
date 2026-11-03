@@ -975,6 +975,12 @@ local function impoundVehicle(source, why)
 
     P.save()
 
+    TriggerClientEvent('fk_police:client:impound', source, {
+        id = impound.id,
+        plate = impound.plate,
+        model = impound.model,
+    })
+
     return {
         ok = true,
         id = impound.id,
@@ -1054,6 +1060,155 @@ end)
 
 
 -- ---------------------------------------------------------------------------
+-- Evidence: what the search turned up, kept on file
+-- ---------------------------------------------------------------------------
+
+--- Store seized items against a person. Frisk and booking both call this, so a
+--- case file grows from the search, not only from the charge sheet.
+--- @return table|nil the evidence entry
+local function addEvidence(source, person, items, kind, note)
+    if type(person) ~= 'string' or person == '' then return nil end
+    if type(items) ~= 'table' or #items == 0 then return nil end
+
+    local entry = P.officerFor(source, true)
+    local store = records()
+    local rules = config().Evidence or {}
+
+    local evidence = {
+        id = P.newId('EVD'),
+        person = person,
+        kind = kind or 'seized',
+        note = Mdt.cleanText(note, 120) or nil,
+        items = {},
+        at = P.isoNow(),
+        atEpoch = epoch(),
+        officer = entry and entry.identifier or nil,
+    }
+
+    for _, item in ipairs(items) do
+        evidence.items[#evidence.items + 1] = {
+            id = item.id or item.label,
+            label = Mdt.cleanText(item.label or item.id, 60),
+            qty = math.max(1, math.floor(tonumber(item.qty) or 1)),
+        }
+    end
+
+    store.evidence[#store.evidence + 1] = evidence
+    P.trim(store.evidence, tonumber(rules.max) or 400)
+
+    P.save()
+
+    return evidence
+end
+
+--- Evidence held against a person.
+--- @return table list
+local function evidenceFor(person)
+    local out = {}
+    local target = type(person) == 'string' and person:lower() or nil
+
+    for index = #(records().evidence or {}), 1, -1 do
+        local item = records().evidence[index]
+
+        if not target or tostring(item.person or ''):lower() == target then out[#out + 1] = item end
+        if #out >= 40 then break end
+    end
+
+    return out
+end
+
+P.addEvidence = addEvidence
+
+-- ---------------------------------------------------------------------------
+-- Verdicts: the court's decision when a suspect leaves custody
+-- ---------------------------------------------------------------------------
+
+--- Close a booking and let the court rule on it.
+--- A guilty verdict keeps the fine and the court fund; an acquittal returns the
+--- money and waives whatever the person still owes on this case.
+--- @return table verdict
+local function finishCustody(entry, custody, why)
+    local store = records()
+    local justice = config().Justice or {}
+    local outcome = Mdt.verdict(config(), custody.id, justice.verdictChance)
+    local verdict = {
+        id = P.newId('VRD'),
+        booking = custody.id,
+        person = custody.person,
+        plate = custody.plate,
+        outcome = outcome,
+        at = P.isoNow(),
+        atEpoch = epoch(),
+        reason = Mdt.cleanText(why, 80) or 'released',
+        officer = entry and entry.identifier or nil,
+    }
+
+    local booking
+
+    for _, candidate in ipairs(store.bookings or {}) do
+        if candidate.id == custody.id then booking = candidate end
+    end
+
+    if booking then
+        booking.releasedAt = P.isoNow()
+        booking.served = custody.served
+        booking.releasedBy = entry and entry.identifier or nil
+        booking.releaseReason = verdict.reason
+        booking.verdict = outcome
+    end
+
+    if outcome == 'acquitted' and justice.acquitRefund ~= false then
+        local refunded = 0
+
+        for _, fine in ipairs(store.fines or {}) do
+            local same = tostring(fine.person or ''):lower() == tostring(custody.person or ''):lower()
+            local owed = math.max(0, (tonumber(fine.amount) or 0) - (tonumber(fine.paid) or 0))
+
+            if same and (fine.status or 'unpaid') ~= 'paid' and owed > 0 then
+                fine.status = 'waived'
+                fine.waivedAt = P.isoNow()
+                fine.waivedBy = 'court'
+                fine.waiveReason = 'acquitted'
+                refunded = refunded + owed
+            end
+        end
+
+        if refunded > 0 then
+            store.department.balance = math.max(0, (tonumber(store.department.balance) or 0) - refunded)
+            verdict.refund = refunded
+        end
+    end
+
+    store.verdicts[#store.verdicts + 1] = verdict
+
+    local limits = config().Justice or {}
+
+    P.trim(store.verdicts, tonumber(limits.maxVerdicts) or 250)
+
+    return verdict
+end
+
+--- Verdicts, newest first, optionally for one person.
+--- @return table list
+local function verdictsFor(person)
+    local out = {}
+    local target = type(person) == 'string' and person:lower() ~= '' and person:lower() or nil
+    local store = records()
+
+    for index = #(store.verdicts or {}), 1, -1 do
+        local verdict = store.verdicts[index]
+
+        if not target or tostring(verdict.person or ''):lower() == target then out[#out + 1] = verdict end
+        if #out >= 50 then break end
+    end
+
+    return out
+end
+
+P.finishCustody = finishCustody
+P.verdictsFor = verdictsFor
+
+-- ---------------------------------------------------------------------------
 -- Custody: booking and releasing the suspect
 -- ---------------------------------------------------------------------------
 
@@ -1069,7 +1224,22 @@ local function custodyFor(source)
     if remaining <= 0 then
         entry.custody = nil
 
-        return { active = false, released = custody.id }
+        local verdict = finishCustody(entry, {
+            id = custody.id,
+            person = custody.person,
+            plate = custody.plate,
+            served = tonumber(custody.seconds) or 0,
+        }, 'sentence served')
+
+        P.save()
+        TriggerClientEvent('fk_police:client:custodyEnded', source, {
+            id = custody.id,
+            person = custody.person,
+            served = tonumber(custody.seconds) or 0,
+            verdict = verdict and verdict.outcome or nil,
+        })
+
+        return { active = false, released = custody.id, verdict = verdict and verdict.outcome or nil }
     end
 
     return {
@@ -1123,6 +1293,25 @@ local function bookSuspect(source, seconds)
 
     local store = records()
 
+    if arrest and type(arrest.charges) == 'table' and #arrest.charges > 0 then
+        local items = {}
+
+        local catalogue = config().Charges or {}
+
+        for _, charge in ipairs(arrest.charges) do
+            local id = type(charge) == 'table' and (charge.id or charge.code) or tostring(charge)
+            local label
+
+            for _, known in ipairs(catalogue) do
+                if known.id == id then label = known.label end
+            end
+
+            items[#items + 1] = { id = id, label = label or id, qty = 1 }
+        end
+
+        addEvidence(source, booking.person, items, 'booking', booking.id)
+    end
+
     store.bookings[#store.bookings + 1] = booking
     P.trim(store.bookings, tonumber(rules.history) or 200)
 
@@ -1166,25 +1355,29 @@ local function releaseSuspect(source, why)
 
     entry.custody = nil
 
-    local store = records()
-
-    for _, booking in ipairs(store.bookings or {}) do
-        if booking.id == custody.id then
-            booking.releasedAt = P.isoNow()
-            booking.served = served
-            booking.releasedBy = entry.identifier
-            booking.releaseReason = Mdt.cleanText(why, 80) or 'released'
-        end
-    end
+    local verdict = finishCustody(entry, {
+        id = custody.id,
+        person = custody.person,
+        plate = custody.plate,
+        served = served,
+    }, why)
 
     P.save()
     TriggerClientEvent('fk_police:client:custodyEnded', source, {
         id = custody.id,
         person = custody.person,
         served = served,
+        verdict = verdict and verdict.outcome or nil,
     })
 
-    return { ok = true, id = custody.id, person = custody.person, served = served }
+    return {
+        ok = true,
+        id = custody.id,
+        person = custody.person,
+        served = served,
+        verdict = verdict and verdict.outcome or nil,
+        refund = verdict and verdict.refund or nil,
+    }
 end
 
 exports('Custody', function(source) return custodyFor(source) end)
@@ -1413,6 +1606,10 @@ local function frisk(source, name)
 
     local found = Mdt.frisk(config(), person)
 
+    if #found.items > 0 then
+        addEvidence(source, person.name, found.items, 'frisk', 'found during a search')
+    end
+
     return {
         ok = true,
         person = person.name,
@@ -1483,6 +1680,8 @@ end
 exports('Frisk', function(source, name) return frisk(source, name) end)
 exports('Breathalyzer', function(source, name) return breathalyzer(source, name) end)
 exports('K9', function(source) return k9(source) end)
+exports('ListVerdicts', function(person) return verdictsFor(person) end)
+exports('ListEvidence', function(person) return evidenceFor(person) end)
 
 RegisterNetEvent('fk_police:server:field', function(tool, name)
     local source = source
@@ -1565,6 +1764,17 @@ local function mdtBundle(source)
         department = { balance = store.department.balance or 0, label = (config().Justice or {}).departmentLabel },
         pursuit = pursuitFor(source),
         custody = custodyFor(source),
+        verdicts = (function()
+            local out = {}
+
+            for index = #(store.verdicts or {}), 1, -1 do
+                out[#out + 1] = store.verdicts[index]
+                if #out >= 10 then break end
+            end
+
+            return out
+        end)(),
+        evidence = evidenceFor(nil),
         callout = P.callout() or false,
     }
 end
@@ -1836,6 +2046,83 @@ RegisterCommand(config().Commands.breath or 'breath', function(source, args)
         result.over and 'OVER THE LIMIT (charge dui)' or 'under the limit'))
 end, false)
 
+-- /callsign 3-ADAM-12 - your name on the radio and in the MDT header.
+RegisterCommand(config().Commands.callsign or 'callsign', function(source, args)
+    local entry, reason = onDuty(source)
+
+    if not entry then return notify(source, ('You need to be on duty (%s).'):format(tostring(reason))) end
+
+    local wanted = Mdt.normalizeCallsign(table.concat(args or {}, '-'))
+
+    if not wanted then
+        return notify(source, ('Usage: /%s <1-ADAM-12> (2-12 letters, digits or dashes).')
+            :format(config().Commands.callsign or 'callsign'))
+    end
+
+    local before = entry.callsign
+    local store = records()
+
+    entry.callsign = wanted
+    store.officers[entry.identifier] = entry
+    P.save()
+    P.sendStatus(source)
+
+    notify(source, before and ('Callsign changed from %s to %s.'):format(before, wanted)
+        or ('Callsign set to %s.'):format(wanted))
+end, false)
+
+-- /verdict [count] - what the court has been up to.
+RegisterCommand(config().Commands.verdict or 'verdict', function(source, args)
+    local entry, reason = onDuty(source)
+
+    if not entry then return notify(source, ('You need to be on duty (%s).'):format(tostring(reason))) end
+
+    local wanted = math.max(1, math.min(25, tonumber(args and args[1]) or 5))
+    local store = records()
+    local shown = 0
+
+    notify(source, ('Court verdicts (newest first, showing %d):'):format(wanted))
+
+    for index = #(store.verdicts or {}), 1, -1 do
+        local verdict = store.verdicts[index]
+
+        notify(source, (' - %s %s: %s%s'):format(
+            tostring(verdict.id), tostring(verdict.person or '?'), tostring(verdict.outcome),
+            verdict.refund and (' (refunded $%d)'):format(verdict.refund) or ''))
+        shown = shown + 1
+
+        if shown >= wanted then break end
+    end
+
+    if shown == 0 then notify(source, ' - nothing on the docket yet.') end
+end, false)
+
+-- /evidence [person] - what is on file, for one person or the lot.
+RegisterCommand(config().Commands.evidence or 'evidence', function(source, args)
+    local entry, reason = onDuty(source)
+
+    if not entry then return notify(source, ('You need to be on duty (%s).'):format(tostring(reason))) end
+
+    local who = table.concat(args or {}, ' ')
+    local list = evidenceFor(who ~= '' and who or nil)
+
+    notify(source, who ~= '' and ('Evidence against %s (%d entr%s):'):format(who, #list, #list == 1 and 'y' or 'ies')
+        or ('Evidence locker (%d entr%s):'):format(#list, #list == 1 and 'y' or 'ies'))
+
+    for index = 1, math.min(10, #list) do
+        local item = list[index]
+        local labels = {}
+
+        for _, seized in ipairs(item.items or {}) do
+            labels[#labels + 1] = ('%s x%d'):format(tostring(seized.label), tonumber(seized.qty) or 1)
+        end
+
+        notify(source, (' - %s: %s'):format(tostring(item.person), table.concat(labels, ', ')))
+    end
+
+    if #list == 0 then notify(source, ' - empty.') end
+end, false)
+
 RegisterCommand(config().Commands.k9 or 'k9', function(source)
     local src = tonumber(source)
 
@@ -1850,6 +2137,7 @@ end, false)
 -- Boot
 -- ---------------------------------------------------------------------------
 
-P.log(('justice ready: %d fine(s), %d warrant(s), %d BOLO(s), %d report(s), %d impound(s), %d shift(s).')
+P.log(('justice ready: %d fine(s), %d warrant(s), %d BOLO(s), %d report(s), %d impound(s), %d shift(s), %d booking(s), %d verdict(s), %d exhibit(s).')
     :format(#(records().fines or {}), #(records().warrants or {}), #(records().bolos or {}),
-        #(records().reports or {}), #(records().impounds or {}), #(records().shifts or {})))
+        #(records().reports or {}), #(records().impounds or {}), #(records().shifts or {}),
+        #(records().bookings or {}), #(records().verdicts or {}), #(records().evidence or {})))

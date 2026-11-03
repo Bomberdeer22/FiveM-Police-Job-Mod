@@ -340,6 +340,7 @@ function Mdt.publicStatus(entry, config)
         citations = tonumber(entry.citations) or 0,
         arrests = tonumber(entry.arrests) or 0,
         callsign = entry.callsign or '1-ADAM-12',
+        medals = Mdt.medalsFor(config, xp),
     }
 end
 
@@ -653,4 +654,46 @@ function Mdt.plateReport(records, plate, nowSeconds)
     end
 
     return report
+end
+
+--- Medals earned at this XP level.
+--- @return table list of { label, blurb, xp }
+function Mdt.medalsFor(config, xp)
+    local earned = {}
+    local value = tonumber(xp) or 0
+
+    for _, medal in ipairs((config or {}).Medals or {}) do
+        if value >= (tonumber(medal.xp) or 0) then
+            earned[#earned + 1] = { label = medal.label, blurb = medal.blurb, xp = medal.xp }
+        end
+    end
+
+    return earned
+end
+
+--- The court's decision for a booking. Deterministic: the booking id is the seed,
+--- so the same booking always gets the same verdict.
+--- @return string 'guilty' | 'acquitted'
+function Mdt.verdict(config, bookingId, chance)
+    local roll = Mdt.hash01(tostring(bookingId or '') .. ':verdict')
+    local odds = tonumber(chance) or tonumber(((config or {}).Justice or {}).verdictChance) or 0.72
+
+    return roll < odds and 'guilty' or 'acquitted'
+end
+
+--- A callsign is short, upper case and readable over the radio.
+--- @return string|nil
+function Mdt.normalizeCallsign(value)
+    if type(value) ~= 'string' then return nil end
+
+    local callsign = value:upper()
+        :gsub('%s+', '-')
+        :gsub('[^A-Z0-9%-]', '')
+        :gsub('%-+', '-')
+        :gsub('^%-', '')
+        :gsub('%-$', '')
+
+    if #callsign < 2 or #callsign > 12 then return nil end
+
+    return callsign
 end

@@ -27,6 +27,8 @@ local records = {
     shifts = {},
     pursuits = {},
     bookings = {},
+    verdicts = {},
+    evidence = {},
     department = { balance = 0 },
 }
 
@@ -153,6 +155,8 @@ local function load()
         shifts = {},
         pursuits = {},
         bookings = {},
+        verdicts = {},
+        evidence = {},
         department = { balance = 0 },
     }
 
@@ -194,7 +198,7 @@ local function load()
     records.arrests = type(data.arrests) == 'table' and data.arrests or {}
     records.officers = type(data.officers) == 'table' and data.officers or {}
 
-    for _, key in ipairs({ 'fines', 'warrants', 'bolos', 'reports', 'impounds', 'shifts', 'pursuits', 'bookings' }) do
+    for _, key in ipairs({ 'fines', 'warrants', 'bolos', 'reports', 'impounds', 'shifts', 'pursuits', 'bookings', 'verdicts', 'evidence' }) do
         records[key] = type(data[key]) == 'table' and data[key] or {}
     end
 

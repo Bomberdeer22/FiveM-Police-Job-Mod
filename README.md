@@ -37,7 +37,7 @@ Full feature-by-feature mapping, keys and behaviour differences:
 | --- | --- |
 | **Duty & station** | Mission Row marker (**E**): duty, locker, armoury, garage, computer, jail. Duty puts the uniform on and starts a **shift**; leaving duty pays the shift and puts your own clothes back. |
 | **HUD** | Top-right overlay while on duty: rank, XP bar, shift timer, active callout with live distance, radar speed + plate with an ANPR alert, backup ETA, pursuit timer, custody timer and a bodycam REC chip. |
-| **MDT** (9 tabs) | **People**, **Vehicles**, **Calls**, **Charges**, **BOLOs** (+ warrants), **Reports**, **Fines**, **Impound**, **Shift** (counters, history, pursuits). Search results carry warrants, BOLOs, impound state and what the person owes. |
+| **MDT** (9 tabs) | **People**, **Vehicles**, **Calls**, **Charges**, **BOLOs** (+ warrants), **Reports**, **Fines**, **Impound**, **Shift** (counters, history, pursuits, medals, the court docket, the evidence locker). Search results carry warrants, BOLOs, impound state and what the person owes. |
 | **Dispatch** | 11 weighted callout types; a scene 120–550 m away; **Y** accepts, **X** asks dispatch now. Accepting populates the scene with armed suspects. |
 | **Traffic stops** | **F10** stops the car in front: plate, owner, registration, insurance, stolen status, BOLOs, warrants, outstanding fines and impound state. The driver waits `Config.Traffic.waitSeconds`. |
 | **Citations & fines** | **F6** writes a citation from `Config.Charges`; the fine is priced on the server, the officer is paid a fee + share, and a **ledger entry** is created with a due date. |
@@ -45,13 +45,16 @@ Full feature-by-feature mapping, keys and behaviour differences:
 | **Warrants** | Issue from a person record or `/warrant add`, revoke, auto-expire; they show on every lookup and stop, and an arrest clears the warrant it was made for. |
 | **BOLOs & ANPR** | Vehicle/person BOLOs with an expiry, cleared from the MDT or `/bolo`. The radar reads the plate in front and the ANPR flags stolen cars, BOLOs, expired papers and warrants in chat and on the HUD. |
 | **Arrests & custody** | **F7** cuffs and books: fine + sentence, warrant cleared, arrest record. `/jail` (or **Book** in the flow) walks the suspect into the cell for the sentence; release early or let it run out. |
+| **Court verdicts** | When a suspect leaves custody the court rules on the booking — deterministically, so the same booking always lands on the same verdict. A guilty verdict keeps the fine and the court fund; an **acquittal waives the fine** and pays it back out of the court fund. `/verdict [count]` and the Shift tab show the docket. |
+| **Evidence** | Every frisk that finds something, and every booked charge sheet, is filed as an exhibit (`EVD-…`: person, items and quantities, kind, officer, time). `/evidence [person]` and the Shift tab read it; it persists across restarts. |
+| **Callsign, medals** | `/callsign 3-ADAM-9` names you on the radio, in the HUD and in the MDT header (normalised, saved to your officer record). XP thresholds in `Config.Medals` award **medals**, shown as chips in the MDT Shift tab. |
 | **Reports** | `/report <title>` opens a draft; the MDT form stores kind, title, body, subjects, plate and charges, awards XP, and lists/search them. |
-| **Impound** | `/impound [reason]` seizes the stopped car (stolen cars carry a surcharge), the lot is in the MDT, and releasing a car takes the fee from the bank into the court fund. |
+| **Impound** | `/impound [reason]` seizes the stopped car (stolen cars carry a surcharge) and **the car is towed off the street**; the lot is in the MDT, and releasing a car takes the fee from the bank into the court fund. |
 | **Pursuits** | `/pursuit start` (needs a stop or an accepted callout) auto-requests code 3, `/pit` spins a car, `/spikes` deploys a 2-minute stinger, `/pursuit end <outcome>` logs it and pays XP for an arrest. |
 | **Field work** | `/frisk` (deterministic pockets per person), `/breath` (breath test against the 0.08 limit, suggests the DUI charge), `/k9` (the dog works the stopped car). |
 | **Backup** | Code 2/3, air, K9, SWAT, EMS and fire, each with its own model, unit count and ETA; the HUD counts the ETA down. |
 | **Ranks & pay** | XP from callouts, citations, arrests, reports and pursuits; `Config.Ranks` sets thresholds and salary; `Config.Pay` the roadside fees and the officer's fine share. |
-| **Records** | `fk_police/data/records.json` — people, vehicles, citations, arrests, officers, fines, warrants, BOLOs, reports, impounds, shifts, pursuits, bookings, court fund. Crash-safe (`Persist`: `.bak` + rotating snapshots). |
+| **Records** | `fk_police/data/records.json` — people, vehicles, citations, arrests, officers, fines, warrants, BOLOs, reports, impounds, shifts, pursuits, bookings, verdicts, evidence, court fund. Crash-safe (`Persist`: `.bak` + rotating snapshots). |
 
 ### Install
 
@@ -100,6 +103,8 @@ FiveM*, and every command works without the key.
 | `/cite <charge> ...` | Cite the current stop |
 | `/arrest <charge> ...` | Arrest the current stop |
 | `/jail [seconds]` \| `/jail release` \| `/jail status` | Book / release / check the suspect in custody |
+| `/verdict [count]`, `/evidence [person]` | The court docket / the evidence locker |
+| `/callsign <1-ADAM-12>` | Set the callsign on the radio and the HUD |
 | `/frisk [name]`, `/breath [name]`, `/k9` | Field work on the stop |
 | `/backup <code2\|code3\|air\|k9\|swat\|ems\|fire>` | Request backup |
 | `/callout`, `/callout_force` | Accept a callout / ask dispatch now |
@@ -129,6 +134,9 @@ exports.fk_police:Cite(src, { 'speeding' })
 exports.fk_police:Arrest(src, { 'assault' })
 exports.fk_police:BookSuspect(src, 120)
 exports.fk_police:Custody(src)
+exports.fk_police:ReleaseSuspect(src, 'bail')
+exports.fk_police:ListVerdicts('Ellis Roan')
+exports.fk_police:ListEvidence('Owen Pike')
 exports.fk_police:ListFines({ person = 'Marcus Vance' })
 exports.fk_police:CollectFine(src, id, amount)
 exports.fk_police:SweepOverdue()
@@ -961,7 +969,7 @@ with mocked FiveM natives, and the NUI page runs in jsdom.
 
 ```bash
 npm install
-npm run check   # lint every Lua file + all 713 checks
+npm run check   # lint every Lua file + all 782 checks
 ```
 
 * **124 economy checks** — starting balances, overdraft refusal, invalid
@@ -1014,7 +1022,7 @@ npm run check   # lint every Lua file + all 713 checks
   **join timeline** (streaming → `spawn_pending` → `complete`, the console lines, and
   `/joinstatus` in both states), and the single-player warning (printed once instead of
   every 15 s).
-* **252 fk_police checks** — plate/name normalisation, person and vehicle records, flags and
+* **286 fk_police checks** — plate/name normalisation, person and vehicle records, flags and
   warrants, sentence maths (unknown charges ignored, duplicates counted once), ranks and
   callout weights; then the real server: seeding, duty and statebags, searches (on/off
   duty, unknown plates and kinds), traffic stops, citations (fine ✓, fee + fine share paid
@@ -1036,9 +1044,14 @@ npm run check   # lint every Lua file + all 713 checks
   refusal, release fee from the bank, no money in the bank), pursuits (reason required,
   backup auto-call, clock, outcomes, XP, the log), field work (deterministic frisk, breath
   range, K9), shifts (start on duty, counters, salary proration, bonuses, the short-shift
-  rule, history), the whole MDT bundle, persistence of every new section, the expanded
+  rule, history), court verdicts (a verdict per release, the booking stamped with it,
+  deterministic verdicts, an acquittal waiving the fine and debiting the court fund, the
+  docket kept per person), evidence (frisk finds and charge sheets filed, quantities, the
+  per-person filter, a restart), callsigns (set, normalised, refusing nonsense, surviving
+  a restart) and medals (thresholds), the whole MDT bundle, persistence of every new section, the expanded
   HUD in jsdom (rank/XP bar, shift timer, callout distance, radar + alert, backup ETA,
   pursuit and custody chips, hidden off duty or behind the MDT), the nine MDT tabs with
+  the medals, the court docket and the evidence locker,
   working BOLO/report/fine/impound/warrant buttons, and three contract checks that every
   `Config.<key>`, `Mdt.<fn>`, net event and NUI callback the code references actually
   exists.

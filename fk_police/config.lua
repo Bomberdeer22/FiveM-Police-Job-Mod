@@ -90,6 +90,13 @@ Config.Vehicles = {
 -- XP comes from resolved callouts (Config.Callouts[x].xp), citations and
 -- arrests. Pay is credited to the bank account through fk_economy, so the
 -- police job feeds the same economy as everything else.
+-- Medals: awarded on XP thresholds, shown in the MDT and the status payload.
+Config.Medals = {
+    { xp = 500, label = 'Meritorious Service', blurb = '500 XP on the job' },
+    { xp = 1500, label = "Chief's Commendation", blurb = '1,500 XP on the job' },
+    { xp = 3000, label = 'Medal of Valor', blurb = '3,000 XP on the job' },
+}
+
 Config.Ranks = {
     { name = 'Cadet', xp = 0, salary = 500 },
     { name = 'Officer', xp = 150, salary = 750 },
@@ -354,6 +361,12 @@ Config.Justice = {
     maxFines = 400,
     -- What the department book (records.department.balance) is called in chat.
     departmentLabel = 'LSPD court fund',
+    -- When a suspect leaves custody the court decides. The roll is deterministic
+    -- per booking, so the same booking always lands on the same verdict.
+    verdictChance = 0.72,
+    -- An acquittal gives the fine back out of the court fund.
+    acquitRefund = true,
+    maxVerdicts = 250,
 }
 
 -- Warrants are stored twice on purpose: on the person (so a stop shows them)
@@ -399,6 +412,12 @@ Config.Shift = {
 
 -- The impound lot. Releasing a car costs the officer the fee (it is the
 -- citizen's money in roleplay, but it is the player's bank here).
+-- Evidence: what a frisk or an arrest turns up, kept for the record.
+Config.Evidence = {
+    max = 400,
+    maxPerPerson = 40,
+}
+
 Config.Impound = {
     fee = 500,
     stolenSurcharge = 750,
@@ -493,6 +512,9 @@ Config.Commands = {
     callout = 'callout',
     forceCallout = 'callout_force',
     status = 'pdstatus',
+    callsign = 'callsign',
+    verdict = 'verdict',
+    evidence = 'evidence',
     report = 'report',
     bolo = 'bolo',
     warrant = 'warrant',

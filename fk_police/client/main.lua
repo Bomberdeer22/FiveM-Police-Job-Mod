@@ -1050,6 +1050,38 @@ RegisterNetEvent('fk_police:client:custodyEnded', function(result)
     end
 end)
 
+-- The tow truck takes the car away: the impounded car is deleted locally so the
+-- lot means something. Anything further than 60 m is left alone.
+RegisterNetEvent('fk_police:client:impound', function(record)
+    if not record or not record.plate then return end
+
+    local ped = PlayerPedId()
+    local coords = GetEntityCoords(ped)
+    local wanted = tostring(record.plate):upper():gsub('%s+', '')
+    local removed = false
+
+    for _, vehicle in ipairs(GetGamePool('CVehicle')) do
+        if DoesEntityExist(vehicle) and not IsPedInVehicle(ped, vehicle, false) then
+            local plate = GetVehicleNumberPlateText(vehicle) or ''
+            local target = GetEntityCoords(vehicle)
+            local distance = #(target - coords)
+
+            if plate:upper():gsub('%s+', '') == wanted and distance <= 60.0 then
+                SetEntityAsMissionEntity(vehicle, true, true)
+                DeleteVehicle(vehicle)
+                removed = true
+                break
+            end
+        end
+    end
+
+    if removed then
+        notify(('%s towed to the impound lot.'):format(wanted))
+    else
+        notify(('%s logged as impounded (the car is not nearby).'):format(wanted))
+    end
+end)
+
 -- ---------------------------------------------------------------------------
 -- Pursuits, PIT and spike strips
 -- ---------------------------------------------------------------------------
