@@ -13,15 +13,30 @@ local RESOURCE = GetCurrentResourceName()
 local FILE = (Config.Records and Config.Records.file) or 'data/records.json'
 
 local records = {
-    version = 1,
+    version = 2,
     people = {},
     vehicles = {},
     citations = {},
     arrests = {},
     officers = {},
+    fines = {},
+    warrants = {},
+    bolos = {},
+    reports = {},
+    impounds = {},
+    shifts = {},
+    pursuits = {},
+    bookings = {},
+    department = { balance = 0 },
 }
 
+--- Hooks the other server modules fill in (shifts, justice). Keeping them here
+--- means duty can tell the rest of the job about a shift without a load-order
+--- dependency.
+FKPolice = FKPolice or { hooks = {} }
+
 local officers = {}      -- [source] = { identifier, onDuty, xp, citations, arrests, callsign }
+local lastArrest = {}    -- [source] = the arrest just booked (for /jail)
 local stops = {}         -- [source] = { plate, vehicle, person, at }
 local activeCallout = nil -- single-player: one callout at a time
 local nextCalloutAt = 0
@@ -82,6 +97,19 @@ local function newId(prefix)
     return ('%s-%d-%04d'):format(prefix, os.time(), math.random(0, 9999))
 end
 
+--- Unix seconds. Everything with a deadline (fines, BOLOs, warrants) is stored
+--- in epoch seconds so it can be compared without parsing dates.
+local function epoch() return os.time() end
+
+--- Keep a list at `max` entries, oldest first out.
+local function trim(list, max)
+    local limit = tonumber(max) or 0
+
+    while limit > 0 and #list > limit do table.remove(list, 1) end
+
+    return list
+end
+
 -- ---------------------------------------------------------------------------
 -- Persistence
 -- ---------------------------------------------------------------------------
@@ -111,12 +139,21 @@ end
 
 local function load()
     records = {
-        version = 1,
+        version = 2,
         people = {},
         vehicles = {},
         citations = {},
         arrests = {},
         officers = {},
+        fines = {},
+        warrants = {},
+        bolos = {},
+        reports = {},
+        impounds = {},
+        shifts = {},
+        pursuits = {},
+        bookings = {},
+        department = { balance = 0 },
     }
 
     local data, source = Persist.decodeAny(FILE, 3)
@@ -156,6 +193,13 @@ local function load()
     records.citations = type(data.citations) == 'table' and data.citations or {}
     records.arrests = type(data.arrests) == 'table' and data.arrests or {}
     records.officers = type(data.officers) == 'table' and data.officers or {}
+
+    for _, key in ipairs({ 'fines', 'warrants', 'bolos', 'reports', 'impounds', 'shifts', 'pursuits', 'bookings' }) do
+        records[key] = type(data[key]) == 'table' and data[key] or {}
+    end
+
+    records.department = type(data.department) == 'table' and data.department or { balance = 0 }
+    records.department.balance = tonumber(records.department.balance) or 0
 
     if next(records.people) == nil and Config.Records.seed ~= false then
         seedRecords()
@@ -199,6 +243,10 @@ local function officerFor(source, create)
         citations = tonumber(saved.citations) or 0,
         arrests = tonumber(saved.arrests) or 0,
         callsign = saved.callsign or '1-ADAM-12',
+        -- live shift tally (not persisted until the shift ends)
+        shiftStartedAt = nil,
+        shift = nil,
+        pursuit = nil,
     }
 
     officers[source] = entry
@@ -223,7 +271,18 @@ local function statusOf(source)
 
     if not entry then return Mdt.publicStatus({}, Config) end
 
-    return Mdt.publicStatus(entry, Config)
+    local status = Mdt.publicStatus(entry, Config)
+
+    -- justice.lua adds the shift timer and the pursuit flag through this hook.
+    if FKPolice.hooks and FKPolice.hooks.statusExtra then
+        local extra = FKPolice.hooks.statusExtra(source, entry)
+
+        if type(extra) == 'table' then
+            for key, value in pairs(extra) do status[key] = value end
+        end
+    end
+
+    return status
 end
 
 --- Money comes from fk_economy and nowhere else.
@@ -305,6 +364,10 @@ local function setDuty(source, on)
         player.state.fkPoliceRank = Mdt.rankFor(Config, entry.xp).name
     end
 
+    if FKPolice.hooks and FKPolice.hooks.dutyChanged then
+        FKPolice.hooks.dutyChanged(source, entry.onDuty)
+    end
+
     if entry.onDuty then
         nextCalloutAt = now() + (tonumber(Config.Dispatch.firstAfter) or 25) * 1000
         TriggerClientEvent('fk_police:client:duty', source, true)
@@ -349,6 +412,30 @@ RegisterNetEvent('fk_police:server:pos', function(coords)
     if not x or not y or not z then return end
 
     entry.coords = { x = x, y = y, z = z }
+end)
+
+--- Radar in the HUD reads a plate and asks what is known about it. Same data
+--- as a stop, minus the stop.
+RegisterNetEvent('fk_police:server:anpr', function(plate)
+    local source = source
+    local entry = officerFor(source, true)
+
+    if not entry or not entry.onDuty then return end
+    if not allow('search', source) then return end
+
+    local report = Mdt.plateReport(records, plate, epoch())
+    local owner = report.vehicle and Mdt.findPerson(records, report.vehicle.owner)
+
+    TriggerClientEvent('fk_police:client:anpr', source, {
+        plate = Mdt.normalizePlate(plate),
+        known = report.vehicle ~= nil,
+        vehicle = report.vehicle,
+        flags = report.flags,
+        ownerFlags = Mdt.personFlags(owner),
+        bolos = report.bolos,
+        impounded = report.impounded ~= nil,
+        stolen = report.vehicle and report.vehicle.stolen == true or false,
+    })
 end)
 
 RegisterNetEvent('fk_police:server:ready', function()
@@ -433,6 +520,8 @@ local function search(source, kind, query)
                 license = person.license,
                 warrants = person.warrants,
                 flags = Mdt.personFlags(person),
+                fines = Mdt.fineTotals(records.fines, person.name, epoch()),
+                bolos = Mdt.matchBolos(records.bolos, 'person', person.name, epoch()),
             }
         end
 
@@ -459,6 +548,9 @@ local function search(source, kind, query)
                     insurance = vehicle.insurance,
                     flags = Mdt.vehicleFlags(vehicle),
                     ownerFlags = Mdt.personFlags(owner),
+                    bolos = Mdt.matchBolos(records.bolos, 'vehicle', vehicle.plate, epoch()),
+                    impounded = Mdt.plateReport(records, vehicle.plate, epoch()).impounded ~= nil,
+                    ownerFines = owner and Mdt.fineTotals(records.fines, owner.name, epoch()) or nil,
                 },
             },
         }
@@ -502,6 +594,9 @@ local function startStop(source, plate, model)
     local vehicle = Mdt.findVehicle(records, normalized)
     local person = vehicle and Mdt.findPerson(records, vehicle.owner) or nil
 
+    -- A new stop is a new person: the remembered arrest is no longer bookable.
+    lastArrest[source] = nil
+
     stops[source] = {
         plate = normalized,
         vehicle = vehicle,
@@ -520,6 +615,10 @@ local function startStop(source, plate, model)
         vehicleFlags = Mdt.vehicleFlags(vehicle),
         ownerFlags = Mdt.personFlags(person),
         warrant = Mdt.hasWarrant(person),
+        bolos = Mdt.matchBolos(records.bolos, 'vehicle', normalized, epoch()),
+        ownerBolos = person and Mdt.matchBolos(records.bolos, 'person', person.name, epoch()) or {},
+        impounded = Mdt.plateReport(records, normalized, epoch()).impounded ~= nil,
+        fines = person and Mdt.fineTotals(records.fines, person.name, epoch()) or nil,
     }
 end
 
@@ -573,10 +672,33 @@ local function cite(source, chargeIds)
     for _, charge in ipairs(charges) do citation.charges[#citation.charges + 1] = charge.id end
 
     records.citations[#records.citations + 1] = citation
+    trim(records.citations, Config.Records.maxCitations)
 
-    local max = Config.Records.maxCitations or 200
+    -- The citation is also a debt: it shows up in the MDT ledger, and if it is
+    -- not settled inside Config.Justice.paymentDays the licence is suspended.
+    if fine > 0 then
+        local days = tonumber(Config.Justice and Config.Justice.paymentDays) or 7
 
-    while #records.citations > max do table.remove(records.citations, 1) end
+        records.fines[#records.fines + 1] = {
+            id = newId('FINE'),
+            citation = citation.id,
+            person = citation.person,
+            plate = citation.plate,
+            charges = citation.charges,
+            amount = fine,
+            paid = 0,
+            status = 'unpaid',
+            issuedAt = epoch(),
+            dueAt = epoch() + math.floor(days * 86400),
+            officer = entry.identifier,
+        }
+
+        trim(records.fines, Config.Justice and Config.Justice.maxFines)
+    end
+
+    if FKPolice.hooks and FKPolice.hooks.cited then
+        FKPolice.hooks.cited(source, citation, fine)
+    end
 
     entry.citations = entry.citations + 1
     persistOfficer(entry)
@@ -628,10 +750,40 @@ local function arrest(source, chargeIds)
 
     local person = stop.person
 
-    -- An arrest clears the warrant it was made for.
+    -- An arrest clears the warrants it was made for (and any unpaid-fines
+    -- warrant, because the debt is now on the arrest record).
+    local clearedCharges = {}
+
+    for _, charge in ipairs(charges) do clearedCharges[charge.id] = true end
+
     if person then
-        person.warrants = {}
+        local remaining = {}
+
+        for _, warrant in ipairs(person.warrants or {}) do
+            local covered = clearedCharges[warrant.charge]
+                or (Config.Justice and warrant.charge == Config.Justice.overdueCharge)
+
+            if not covered then remaining[#remaining + 1] = warrant end
+        end
+
+        person.warrants = remaining
         records.people[Mdt.personKey(person.name)] = person
+
+        local kept, removed = {}, 0
+
+        for _, warrant in ipairs(records.warrants or {}) do
+            local same = person.name and Mdt.normalizeName(warrant.person) == Mdt.normalizeName(person.name)
+            local covered = clearedCharges[warrant.charge]
+                or (Config.Justice and warrant.charge == Config.Justice.overdueCharge)
+
+            if same and covered and warrant.active ~= false then
+                removed = removed + 1
+            else
+                kept[#kept + 1] = warrant
+            end
+        end
+
+        records.warrants = kept
     end
 
     local arrestRecord = {
@@ -657,6 +809,10 @@ local function arrest(source, chargeIds)
     persistOfficer(entry)
     save()
 
+    if FKPolice.hooks and FKPolice.hooks.arrested then
+        FKPolice.hooks.arrested(source, arrestRecord)
+    end
+
     local share = math.floor(fine * (Config.Pay.fineShare or 0.25))
     local payAmount = (Config.Pay.arrest or 0) + share
 
@@ -664,6 +820,14 @@ local function arrest(source, chargeIds)
     addXp(source, 60, 'arrest')
 
     stops[source] = nil
+    lastArrest[source] = {
+        id = arrestRecord.id,
+        person = arrestRecord.person,
+        plate = arrestRecord.plate,
+        charges = arrestRecord.charges,
+        jail = jail,
+        at = now(),
+    }
 
     return {
         ok = true,
@@ -808,6 +972,10 @@ local function resolveCallout(source, coords)
     pay(source, payAmount, 'callout')
     addXp(source, callout.xp, 'callout resolved')
 
+    if FKPolice.hooks and FKPolice.hooks.calloutResolved then
+        FKPolice.hooks.calloutResolved(source, callout)
+    end
+
     local gap = tonumber(Config.Dispatch.minGap) or 60
     local maxGap = tonumber(Config.Dispatch.maxGap) or 150
 
@@ -926,6 +1094,10 @@ local function requestBackup(source, kind)
 
     TriggerClientEvent('fk_police:client:backup', source, kind, option)
 
+    if FKPolice.hooks and FKPolice.hooks.backupRequested then
+        FKPolice.hooks.backupRequested(source, kind)
+    end
+
     return { ok = true, kind = kind, units = option.units, delay = option.delay }
 end
 
@@ -971,6 +1143,32 @@ RegisterCommand('pdstatus', function(source)
             status.citations, status.arrests))
 end, false)
 
+--- Everything the job can do, in one list, because a chat-only mod needs one.
+RegisterCommand('police', function(source)
+    local src = tonumber(source)
+
+    if not src or src < 1 then
+        return log('police: /duty /pc /stop /cite /arrest /backup /callout /report /bolo /warrant /fine /impound /pursuit /frisk /breath /k9 /radar /bodycam')
+    end
+
+    local lines = {
+        'LSPD - everything you can do:',
+        '  /duty, /pd, /pd locker|armoury|garage|car <model>|charges',
+        '  /pc - police computer (MDT)      /stop - traffic stop the car ahead',
+        '  /cite <id...>  /arrest <id...>   /frisk  /breath  /k9',
+        '  /backup <code2|code3|air|k9|swat|ems|fire>',
+        '  /callout (accept)  /callout_force (ask dispatch now)',
+        '  /report <title> - file an incident report in the MDT',
+        '  /bolo add <plate|name> <reason>   /bolo list   /bolo clear <id>',
+        '  /warrant add <name> <charge>  /warrant list  /warrant revoke <id>',
+        '  /fine list [name]  /fine collect <id>  /fine waive <id>  /fine sweep',
+        '  /impound [reason]  /impound list  /impound release <id>',
+        '  /pursuit start|end|status  /radar  /bodycam',
+    }
+
+    for _, line in ipairs(lines) do reply(src, line) end
+end, false)
+
 -- Console: pdxp <player id> <amount> - a commendation, for testing the ranks.
 RegisterCommand('pdxp', function(source, args)
     local src = tonumber(source)
@@ -995,6 +1193,58 @@ RegisterCommand('pdxp', function(source, args)
 end, true)
 
 -- ---------------------------------------------------------------------------
+-- The rest of the job talks to the core through this table
+-- ---------------------------------------------------------------------------
+-- server/justice.lua is loaded after this file and owns fines, warrants, BOLOs,
+-- reports, shifts, impound and pursuits. It reads and writes the same record
+-- store; nothing is duplicated.
+
+FKPolice.records = function() return records end
+FKPolice.setDuty = function(source, on) return setDuty(source, on) end
+FKPolice.officers = officers
+FKPolice.officerFor = officerFor
+FKPolice.persistOfficer = persistOfficer
+FKPolice.statusOf = statusOf
+FKPolice.sendStatus = function(source) sendStatus(source) end
+FKPolice.reply = reply
+FKPolice.log = log
+FKPolice.warn = warn
+FKPolice.errorf = errorf
+FKPolice.addXp = addXp
+FKPolice.pay = pay
+FKPolice.allow = allow
+FKPolice.newId = newId
+FKPolice.isoNow = isoNow
+FKPolice.epoch = epoch
+FKPolice.trim = trim
+FKPolice.save = save
+FKPolice.stopFor = function(source) return currentStop(source) end
+FKPolice.lastArrest = function(source)
+    local arrest = lastArrest[source]
+
+    -- Ten minutes is enough to drive to the station; after that, /jail has
+    -- nothing to book.
+    if arrest and (now() - (arrest.at or 0)) > 600000 then
+        lastArrest[source] = nil
+
+        return nil
+    end
+
+    return arrest
+end
+FKPolice.config = function() return Config end
+FKPolice.callout = function() return activeCallout end
+FKPolice.clearCallout = function(source)
+    if activeCallout and (not source or activeCallout.source == source) then
+        activeCallout = nil
+        TriggerClientEvent('fk_police:client:callout', source or -1, nil)
+    end
+end
+FKPolice.nextCalloutIn = function(ms)
+    nextCalloutAt = now() + (tonumber(ms) or 60000)
+end
+
+-- ---------------------------------------------------------------------------
 -- Lifecycle
 -- ---------------------------------------------------------------------------
 
@@ -1003,6 +1253,7 @@ AddEventHandler('playerDropped', function()
 
     officers[source] = nil
     stops[source] = nil
+    lastArrest[source] = nil
 
     if activeCallout and activeCallout.source == source then activeCallout = nil end
 end)

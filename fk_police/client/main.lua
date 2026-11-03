@@ -18,6 +18,22 @@ local uniformOn = false
 local savedOutfit = nil
 local blips = {}
 
+-- Declared here, not at the bottom of the file: a Lua local declared *after* a
+-- closure is not visible inside it, and these are written by event handlers that
+-- appear earlier in the file.
+local backupState = nil
+local scenePeds = {}
+local sceneBlips = {}
+local clearScene, populateScene
+local bodycam = false
+local radarOn = (Config.Radar or {}).enabled ~= false
+local radar = { plate = nil, speed = 0, on = radarOn }
+local anpr = nil
+local pursuit = { active = false }
+local lastAnprPlate = nil
+local pursuitBlip = nil
+local hudPayload
+
 -- ---------------------------------------------------------------------------
 -- Chat helpers
 -- ---------------------------------------------------------------------------
@@ -306,7 +322,10 @@ RegisterNetEvent('fk_police:client:callout', function(nextCallout)
     callout = type(nextCallout) == 'table' and nextCallout or nil
     clearCalloutBlip()
 
-    if not callout then return end
+    if not callout then
+        if clearScene then clearScene() end
+        return
+    end
 
     if callout.coords then
         calloutBlip = AddBlipForCoord(callout.coords.x, callout.coords.y, callout.coords.z)
@@ -321,6 +340,9 @@ RegisterNetEvent('fk_police:client:callout', function(nextCallout)
     end
 
     radio(('%s: %s. Press Y to accept.'):format(callout.code or 'CALL', callout.label or 'Callout'))
+
+    -- Accepted: the scene now has people on it.
+    if callout.state == 'accepted' and populateScene then populateScene(callout) end
 end)
 
 RegisterNetEvent('fk_police:client:calloutDone', function(result)
@@ -339,11 +361,11 @@ end, false)
 -- Traffic stops
 -- ---------------------------------------------------------------------------
 
-local function vehicleAhead()
+local function vehicleAhead(distance)
     local ped = PlayerPedId()
     local coords = GetEntityCoords(ped)
     local forward = GetEntityForwardVector(ped)
-    local maxDistance = (Config.Traffic or {}).maxDistance or 25.0
+    local maxDistance = distance or (Config.Traffic or {}).maxDistance or 25.0
     local best, bestDistance = 0, nil
 
     for _, vehicle in ipairs(GetGamePool('CVehicle')) do
@@ -524,6 +546,8 @@ end
 RegisterNetEvent('fk_police:client:backup', function(kind, option)
     local units = (option and option.units) or 1
 
+    backupState = { kind = kind, eta = (option and option.delay) or 10, at = GetGameTimer() }
+
     CreateThread(function()
         for index = 1, units do
             spawnBackupUnit(kind, option or {}, index)
@@ -578,7 +602,12 @@ local function openComputer()
         status = status,
         charges = Config.Charges,
         calls = callout and { callout } or {},
+        keys = Config.Commands,
     })
+
+    -- Everything else the page lists (BOLOs, reports, fines, impounds, shifts,
+    -- warrants, the court fund) comes from the server in one bundle.
+    TriggerServerEvent('fk_police:server:mdt')
 end
 
 local function closeComputer()
@@ -684,14 +713,564 @@ end)
 RegisterKeyMapping('pd', 'Police interaction menu', 'keyboard', 'M')
 RegisterKeyMapping('pc', 'Police computer', 'keyboard', 'F9')
 RegisterKeyMapping('stop', 'Traffic stop', 'keyboard', 'F10')
+RegisterKeyMapping('duty', 'Go on / off duty', 'keyboard', 'F11')
+RegisterKeyMapping('callout', 'Accept callout', 'keyboard', 'Y')
+RegisterKeyMapping('callout_force', 'Ask dispatch for a call now', 'keyboard', 'X')
+RegisterKeyMapping('cite', 'Cite the current stop', 'keyboard', 'F6')
+RegisterKeyMapping('arrest', 'Arrest the current stop', 'keyboard', 'F7')
+RegisterKeyMapping('radar', 'Toggle the radar', 'keyboard', 'F5')
+RegisterKeyMapping('bodycam', 'Toggle the bodycam', 'keyboard', 'L')
+
 RegisterCommand('backup_code3', function()
     TriggerServerEvent('fk_police:server:backup', 'code3')
 end, false)
 
-RegisterKeyMapping('backup_code3', 'Request backup (code 3)', 'keyboard', 'F11')
-RegisterKeyMapping('callout', 'Accept callout', 'keyboard', 'Y')
+RegisterKeyMapping('backup_code3', 'Request backup (code 3)', 'keyboard', 'G')
 
 CreateThread(function()
     Wait(3000)
     stationBlips()
+end)
+
+-- ---------------------------------------------------------------------------
+-- HUD, radar and the ANPR
+-- ---------------------------------------------------------------------------
+
+hudPayload = function()
+    local ped = PlayerPedId()
+    local coords = GetEntityCoords(ped)
+    local progress = nil
+
+    -- The rank maths also lives in shared/mdt.lua; the client only needs the
+    -- percentage, and the server already sends the rank name.
+    if status.nextRankXp and status.xp then
+        local span = math.max(1, (status.nextRankXp or 0) - (status.rankXp or 0))
+        progress = math.max(0, math.min(100, math.floor(((status.xp - (status.rankXp or 0)) / span) * 100)))
+    end
+
+    local calloutHud = nil
+
+    if callout and callout.coords then
+        local dx = coords.x - callout.coords.x
+        local dy = coords.y - callout.coords.y
+        local dz = coords.z - callout.coords.z
+
+        calloutHud = {
+            code = callout.code,
+            label = callout.label,
+            state = callout.state,
+            distance = math.floor(math.sqrt(dx * dx + dy * dy + dz * dz)),
+            xp = callout.xp,
+        }
+    end
+
+    return {
+        onDuty = status.onDuty == true,
+        rank = status.rank,
+        xp = status.xp or 0,
+        percent = progress,
+        nextRank = status.nextRank,
+        citations = status.citations or 0,
+        arrests = status.arrests or 0,
+        callsign = status.callsign,
+        shiftSeconds = status.shiftSeconds or 0,
+        callout = calloutHud,
+        radar = (radarOn and (Config.Hud or {}).showRadar ~= false)
+            and { plate = radar.plate, speed = radar.speed, alert = anpr and anpr.alert or false }
+            or nil,
+        anpr = anpr,
+        pursuit = pursuit.active and pursuit or nil,
+        custody = (status.custodySeconds or 0) > 0
+            and { seconds = status.custodySeconds, person = status.custodyPerson }
+            or nil,
+        backup = backupState,
+        bodycam = bodycam,
+        pursuitActive = pursuit.active == true,
+    }
+end
+
+CreateThread(function()
+    if Config.Hud and Config.Hud.enabled == false then return end
+
+    Wait(2000)
+
+    local interval = math.max(200, tonumber(Config.Hud and Config.Hud.interval) or 500)
+
+    while true do
+        SendNUIMessage({ action = 'hud', hud = hudPayload() })
+        Wait(interval)
+    end
+end)
+
+--- Radar: read the car in front, in mph, and ask the server what is known
+--- about the plate (that is the ANPR half).
+CreateThread(function()
+    while true do
+        Wait(250)
+
+        local reading = nil
+
+        if radarOn and status.onDuty then
+            local ped = PlayerPedId()
+            local vehicle = GetVehiclePedIsIn(ped, false)
+
+            if vehicle ~= 0 then
+                local target = vehicleAhead((Config.Radar or {}).maxDistance or 60.0)
+
+                if target and target ~= 0 then
+                    local speed = GetEntitySpeed(target) * 2.23694
+                    local plate = GetVehicleNumberPlateText(target)
+
+                    reading = {
+                        speed = math.floor(speed + 0.5),
+                        plate = plate and plate:gsub('%s+$', '') or nil,
+                        moving = speed >= ((Config.Radar or {}).minSpeed or 4.0),
+                    }
+                end
+            end
+        end
+
+        if reading then
+            radar.speed = reading.speed
+            radar.plate = reading.plate
+
+            if (Config.Radar or {}).autoAnpr ~= false and reading.moving
+                and reading.plate and #reading.plate > 1 and reading.plate ~= lastAnprPlate then
+                lastAnprPlate = reading.plate
+                TriggerServerEvent('fk_police:server:anpr', reading.plate)
+            end
+        else
+            radar.speed, radar.plate, lastAnprPlate = 0, nil, nil
+        end
+    end
+end)
+
+RegisterNetEvent('fk_police:client:anpr', function(report)
+    anpr = {
+        plate = report.plate,
+        known = report.known == true,
+        stolen = report.stolen == true,
+        flags = report.flags or {},
+        ownerFlags = report.ownerFlags or {},
+        bolos = report.bolos or {},
+        impounded = report.impounded == true,
+        alert = report.stolen == true or #(report.bolos or {}) > 0
+            or #(report.flags or {}) > 0 or #(report.ownerFlags or {}) > 0,
+    }
+
+    if anpr.alert then
+        TriggerEvent('chat:addMessage', {
+            color = { 255, 90, 90 },
+            args = { 'ANPR', ('%s: %s'):format(anpr.plate, table.concat(
+                (function()
+                    local list = {}
+
+                    if anpr.stolen then list[#list + 1] = 'STOLEN' end
+                    for _, bolo in ipairs(anpr.bolos) do list[#list + 1] = 'BOLO: ' .. tostring(bolo.reason) end
+                    for _, flag in ipairs(anpr.flags) do list[#list + 1] = flag end
+                    for _, flag in ipairs(anpr.ownerFlags) do list[#list + 1] = flag end
+
+                    return list
+                end)(), ', ')) },
+        })
+    end
+end)
+
+RegisterCommand(Config.Commands.radar or 'radar', function()
+    radarOn = not radarOn
+    radar.on = radarOn
+    notify(radarOn and 'Radar on.' or 'Radar off.')
+end, false)
+
+RegisterCommand('shift', function(_, args)
+    local action = type(args) == 'table' and tostring(args[1] or '') or ''
+    TriggerServerEvent('fk_police:server:shift', action)
+end, false)
+
+RegisterCommand(Config.Commands.bodycam or 'bodycam', function()
+    bodycam = not bodycam
+
+    if bodycam then
+        notify('Bodycam recording.')
+    else
+        notify('Bodycam stopped.')
+    end
+end, false)
+
+-- ---------------------------------------------------------------------------
+-- Callout scenes: suspects, and tidying them up again
+-- ---------------------------------------------------------------------------
+
+function clearScene()
+    for _, blip in ipairs(sceneBlips) do
+        if DoesBlipExist(blip) then RemoveBlip(blip) end
+    end
+
+    sceneBlips = {}
+
+    for _, ped in ipairs(scenePeds) do
+        if DoesEntityExist(ped) then
+            SetEntityAsMissionEntity(ped, false, true)
+            DeleteEntity(ped)
+        end
+    end
+
+    scenePeds = {}
+end
+
+function populateScene(activeCallout)
+    clearScene()
+
+    local suspects = tonumber(activeCallout.suspects) or 0
+
+    if suspects <= 0 or not activeCallout.coords then return end
+
+    local model = GetHashKey('g_m_y_lost_01')
+
+    RequestModel(model)
+
+    local waited = 0
+
+    while not HasModelLoaded(model) and waited < 5000 do
+        Wait(100)
+        waited = waited + 100
+    end
+
+    if not HasModelLoaded(model) then return end
+
+    local group = GetHashKey('COP')
+
+    for index = 1, suspects do
+        local angle = (index / math.max(1, suspects)) * math.pi * 2
+        local x = activeCallout.coords.x + math.cos(angle) * (3.0 + index)
+        local y = activeCallout.coords.y + math.sin(angle) * (3.0 + index)
+
+        local ped = CreatePed(4, model, x, y, activeCallout.coords.z, angle * 57.2958, true, true)
+
+        if DoesEntityExist(ped) then
+            SetPedFleeAttributes(ped, 0, false)
+            SetPedCombatAttributes(ped, 46, true)
+            SetPedCombatAbility(ped, 2)
+            SetBlockingOfNonTemporaryEvents(ped, true)
+            SetPedAlertness(ped, 3)
+
+            if activeCallout.weapon then
+                local weapon = GetHashKey(activeCallout.weapon)
+                GiveWeaponToPed(ped, weapon, 250, false, true)
+            end
+
+            SetPedRelationshipGroupHash(ped, group)
+            TaskCombatPed(ped, PlayerPedId(), 0, 16)
+
+            local blip = AddBlipForEntity(ped)
+            SetBlipSprite(blip, 84)
+            SetBlipColour(blip, 1)
+            SetBlipScale(blip, 0.8)
+            SetBlipAsShortRange(blip, true)
+
+            sceneBlips[#sceneBlips + 1] = blip
+            scenePeds[#scenePeds + 1] = ped
+        end
+    end
+
+    SetModelAsNoLongerNeeded(model)
+end
+
+RegisterNetEvent('fk_police:client:calloutScene', function(activeCallout)
+    if not activeCallout then return clearScene() end
+
+    populateScene(activeCallout)
+end)
+
+-- ---------------------------------------------------------------------------
+-- Custody: walk the suspect into the cell
+-- ---------------------------------------------------------------------------
+
+local custodyPed = nil
+
+local function suspectNearby()
+    local vehicle = vehicleAhead(35.0)
+
+    if vehicle and vehicle ~= 0 then
+        local driver = GetPedInVehicleSeat(vehicle, -1)
+
+        if driver and driver ~= 0 then return driver end
+    end
+
+    local ped = PlayerPedId()
+    local coords = GetEntityCoords(ped)
+    local best, bestDistance = nil, nil
+
+    for _, candidate in ipairs(scenePeds) do
+        if DoesEntityExist(candidate) then
+            local target = GetEntityCoords(candidate)
+            local dx, dy, dz = target.x - coords.x, target.y - coords.y, target.z - coords.z
+            local distance = math.sqrt(dx * dx + dy * dy + dz * dz)
+
+            if distance < 40.0 and (not bestDistance or distance < bestDistance) then
+                best, bestDistance = candidate, distance
+            end
+        end
+    end
+
+    return best
+end
+
+RegisterNetEvent('fk_police:client:custody', function(booking)
+    if not booking or not booking.cell then return end
+
+    custodyPed = suspectNearby()
+
+    if not custodyPed then
+        return notify(('%s booked. There was nobody nearby to walk to the cell.'):format(tostring(booking.person)))
+    end
+
+    SetEntityCoords(custodyPed, booking.cell.x, booking.cell.y, booking.cell.z, false, false, false, true)
+    SetEntityHeading(custodyPed, booking.cell.w or 0.0)
+    ClearPedTasks(custodyPed)
+    SetBlockingOfNonTemporaryEvents(custodyPed, true)
+    SetPedCanRagdoll(custodyPed, false)
+    FreezeEntityPosition(custodyPed, true)
+    SetEntityAsMissionEntity(custodyPed, true, true)
+
+    notify(('%s is in the cell for %s.'):format(tostring(booking.person), tostring(booking.seconds) .. 's'))
+end)
+
+RegisterNetEvent('fk_police:client:custodyEnded', function(result)
+    if custodyPed and DoesEntityExist(custodyPed) then
+        FreezeEntityPosition(custodyPed, false)
+        SetEntityAsMissionEntity(custodyPed, false, true)
+        DeleteEntity(custodyPed)
+    end
+
+    custodyPed = nil
+
+    if result and result.person then
+        notify(('%s released.'):format(tostring(result.person)))
+    end
+end)
+
+-- ---------------------------------------------------------------------------
+-- Pursuits, PIT and spike strips
+-- ---------------------------------------------------------------------------
+
+local function clearPursuitBlip()
+    if pursuitBlip and DoesBlipExist(pursuitBlip) then RemoveBlip(pursuitBlip) end
+    pursuitBlip = nil
+end
+
+local function addPursuitBlip()
+    local ped = PlayerPedId()
+    local coords = GetEntityCoords(ped)
+
+    pursuitBlip = AddBlipForCoord(coords.x, coords.y, coords.z)
+    SetBlipSprite(pursuitBlip, 143)
+    SetBlipColour(pursuitBlip, 1)
+    SetBlipScale(pursuitBlip, 1.0)
+    BeginTextCommandSetBlipName('STRING')
+    AddTextComponentSubstringPlayerName('Pursuit')
+    EndTextCommandSetBlipName(pursuitBlip)
+end
+
+RegisterNetEvent('fk_police:client:pursuit', function(state)
+    pursuit = type(state) == 'table' and state or { active = false }
+
+    if pursuit.active then
+        if not pursuitBlip then addPursuitBlip() end
+
+        notify('Pursuit running. /pit to spin a car, /spikes to deploy.')
+    else
+        clearPursuitBlip()
+    end
+end)
+
+RegisterCommand('pit', function()
+    if not pursuit.active then return notify('Start a pursuit first (/pursuit).') end
+
+    local target = vehicleAhead()
+
+    if not target or target == 0 then return notify('No car in front to PIT.') end
+
+    local driver = GetPedInVehicleSeat(target, -1)
+
+    if driver and driver ~= 0 then
+        -- A PIT spins the rear quarter: heading changes, speed drops, the game
+        -- takes over from there.
+        SetEntityHeading(target, GetEntityHeading(target) + 35.0)
+        SetVehicleForwardSpeed(target, math.max(2.0, GetEntitySpeed(target) * 0.55))
+        notify('PIT.')
+    end
+end, false)
+
+RegisterCommand('spikes', function()
+    if not Config.Field or not Config.Field.spikes then return notify('Spike strips are disabled.') end
+
+    local ped = PlayerPedId()
+    local coords = GetEntityCoords(ped)
+    local forward = GetEntityForwardVector(ped)
+    local x = coords.x + forward.x * 4.0
+    local y = coords.y + forward.y * 4.0
+    local model = GetHashKey('p_ld_stinger_s')
+
+    RequestModel(model)
+
+    local waited = 0
+
+    while not HasModelLoaded(model) and waited < 3000 do
+        Wait(100)
+        waited = waited + 100
+    end
+
+    if not HasModelLoaded(model) then return notify('Could not load the spike strip.') end
+
+    local object = CreateObject(model, x, y, coords.z - 0.9, true, true, false)
+
+    SetModelAsNoLongerNeeded(model)
+
+    if DoesEntityExist(object) then SetEntityHeading(object, GetEntityHeading(ped)) end
+
+    if not DoesEntityExist(object) then return notify('Could not place the spike strip.') end
+
+    notify('Spikes deployed. They will burst tyres for two minutes.')
+
+    CreateThread(function()
+        local expires = GetGameTimer() + (tonumber(Config.Field.spikeSeconds) or 120) * 1000
+
+        while GetGameTimer() < expires do
+            Wait(300)
+
+            local strip = GetEntityCoords(object)
+
+            for _, vehicle in ipairs(GetGamePool('CVehicle')) do
+                if DoesEntityExist(vehicle) then
+                    local target = GetEntityCoords(vehicle)
+                    local dx = target.x - strip.x
+                    local dy = target.y - strip.y
+
+                    if math.sqrt(dx * dx + dy * dy) < 2.6 and GetEntitySpeed(vehicle) > 2.0 then
+                        for wheel = 0, 7 do
+                            if not IsVehicleTyreBurst(vehicle, wheel, false) then
+                                SetVehicleTyreBurst(vehicle, wheel, true, 1000.0)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+
+        if DoesEntityExist(object) then
+            SetEntityAsMissionEntity(object, false, true)
+            DeleteEntity(object)
+        end
+    end)
+end, false)
+
+-- ---------------------------------------------------------------------------
+-- MDT: bundle, drafts and the new callbacks
+-- ---------------------------------------------------------------------------
+
+RegisterNetEvent('fk_police:client:mdt', function(bundle)
+    SendNUIMessage({ action = 'mdt', bundle = bundle })
+end)
+
+RegisterNetEvent('fk_police:client:reportDraft', function(title)
+    openComputer()
+
+    SendNUIMessage({ action = 'reportDraft', title = title })
+end)
+
+RegisterNetEvent('fk_police:client:field', function(kind, result)
+    SendNUIMessage({ action = 'field', kind = kind, result = result })
+end)
+
+RegisterNUICallback('refresh', function(_, cb)
+    TriggerServerEvent('fk_police:server:mdt')
+    cb({ ok = true })
+end)
+
+RegisterNUICallback('bolo', function(data, cb)
+    TriggerServerEvent('fk_police:server:bolo:add', tostring(data.kind or 'vehicle'), tostring(data.value or ''),
+        tostring(data.reason or ''), tonumber(data.minutes))
+    cb({ ok = true })
+end)
+
+RegisterNUICallback('boloClear', function(data, cb)
+    TriggerServerEvent('fk_police:server:bolo:clear', tostring(data.id or ''))
+    cb({ ok = true })
+end)
+
+RegisterNUICallback('report', function(data, cb)
+    TriggerServerEvent('fk_police:server:report:file', {
+        kind = data.kind,
+        title = data.title,
+        body = data.body,
+        subjects = data.subjects,
+        plate = data.plate,
+        charges = data.charges,
+    })
+    cb({ ok = true })
+end)
+
+RegisterNUICallback('fineCollect', function(data, cb)
+    TriggerServerEvent('fk_police:server:fine:collect', tostring(data.id or ''), tonumber(data.amount))
+    cb({ ok = true })
+end)
+
+RegisterNUICallback('fineWaive', function(data, cb)
+    TriggerServerEvent('fk_police:server:fine:waive', tostring(data.id or ''), tostring(data.reason or ''))
+    cb({ ok = true })
+end)
+
+RegisterNUICallback('impoundRelease', function(data, cb)
+    TriggerServerEvent('fk_police:server:impound:release', tostring(data.id or ''))
+    cb({ ok = true })
+end)
+
+RegisterNUICallback('warrantIssue', function(data, cb)
+    TriggerServerEvent('fk_police:server:warrant:issue', {
+        person = data.person,
+        charge = data.charge,
+        note = data.note,
+        days = tonumber(data.days),
+    })
+    cb({ ok = true })
+end)
+
+RegisterNUICallback('warrantRevoke', function(data, cb)
+    TriggerServerEvent('fk_police:server:warrant:revoke', tostring(data.id or ''))
+    cb({ ok = true })
+end)
+
+RegisterNUICallback('pursuit', function(data, cb)
+    if data.action == 'end' then
+        TriggerServerEvent('fk_police:server:pursuit:end', tostring(data.outcome or 'terminated'))
+    else
+        TriggerServerEvent('fk_police:server:pursuit:start')
+    end
+
+    cb({ ok = true })
+end)
+
+RegisterNUICallback('field', function(data, cb)
+    TriggerServerEvent('fk_police:server:field', tostring(data.tool or 'frisk'), data.name)
+    cb({ ok = true })
+end)
+
+RegisterNUICallback('impound', function(data, cb)
+    TriggerServerEvent('fk_police:server:impound', tostring(data.reason or ''))
+    cb({ ok = true })
+end)
+
+CreateThread(function()
+    while true do
+        Wait(1000)
+
+        if backupState and backupState.at then
+            local left = math.max(0, (backupState.eta or 10) - math.floor((GetGameTimer() - backupState.at) / 1000))
+
+            backupState.remaining = left
+
+            if left <= 0 then backupState = nil end
+        end
+    end
 end)

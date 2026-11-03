@@ -77,8 +77,11 @@ Config.Vehicles = {
     { model = 'police', label = 'Police Cruiser' },
     { model = 'police2', label = 'Police Buffalo' },
     { model = 'police3', label = 'Police Interceptor' },
+    { model = 'police4', label = 'Unmarked Cruiser' },
     { model = 'policeb', label = 'Police Bike' },
     { model = 'fbi2', label = 'Unmarked SUV' },
+    { model = 'riot', label = 'Police Riot' },
+    { model = 'polmav', label = 'Police Maverick' },
 }
 
 -- ---------------------------------------------------------------------------
@@ -173,6 +176,66 @@ Config.Callouts = {
         suspects = 0,
         charges = {},
     },
+    {
+        id = 'drunk_driver',
+        code = '10-55',
+        label = 'Suspected drunk driver',
+        xp = 50,
+        weight = 18,
+        suspects = 1,
+        charges = { 'dui', 'reckless_driving' },
+        weapon = nil,
+    },
+    {
+        id = 'prowler',
+        code = '10-32',
+        label = 'Prowler reported',
+        xp = 45,
+        weight = 15,
+        suspects = 1,
+        charges = { 'resisting_arrest' },
+        weapon = 'WEAPON_KNIFE',
+    },
+    {
+        id = 'shots_fired',
+        code = '10-71',
+        label = 'Shots fired',
+        xp = 140,
+        weight = 12,
+        suspects = 2,
+        charges = { 'assault', 'evading_police' },
+        weapon = 'WEAPON_PISTOL',
+    },
+    {
+        id = 'bank_alarm',
+        code = '10-90',
+        label = 'Bank alarm',
+        xp = 200,
+        weight = 6,
+        suspects = 3,
+        charges = { 'armed_robbery' },
+        weapon = 'WEAPON_CARBINERIFLE',
+    },
+    {
+        id = 'pursuit_in_progress',
+        code = '10-80',
+        label = 'Pursuit in progress',
+        xp = 160,
+        weight = 8,
+        suspects = 1,
+        charges = { 'evading_police', 'grand_theft_auto' },
+        weapon = nil,
+    },
+    {
+        id = 'vandalism',
+        code = '10-17',
+        label = 'Vandalism in progress',
+        xp = 40,
+        weight = 12,
+        suspects = 1,
+        charges = { 'vandalism' },
+        weapon = nil,
+    },
 }
 
 -- Charges, fines and jail time. Every value is server-side; the UI only picks
@@ -185,6 +248,13 @@ Config.Charges = {
     { id = 'grand_theft_auto', label = 'Grand theft auto', fine = 1800, jail = 120, type = 'felony' },
     { id = 'armed_robbery', label = 'Armed robbery', fine = 3000, jail = 300, type = 'felony' },
     { id = 'resisting_arrest', label = 'Resisting arrest', fine = 800, jail = 60, type = 'misdemeanor' },
+    { id = 'dui', label = 'Driving under the influence', fine = 1000, jail = 60, type = 'misdemeanor' },
+    { id = 'possession', label = 'Possession of narcotics', fine = 900, jail = 45, type = 'misdemeanor' },
+    { id = 'evading_police', label = 'Evading police', fine = 1500, jail = 90, type = 'felony' },
+    { id = 'assaulting_a_police_officer', label = 'Assaulting a police officer', fine = 2500, jail = 180, type = 'felony' },
+    { id = 'burglary', label = 'Burglary', fine = 2200, jail = 240, type = 'felony' },
+    { id = 'vandalism', label = 'Vandalism', fine = 600, jail = 0, type = 'misdemeanor' },
+    { id = 'illegal_parking', label = 'Illegal parking', fine = 150, jail = 0, type = 'infraction' },
 }
 
 -- ---------------------------------------------------------------------------
@@ -205,6 +275,10 @@ Config.Traffic = {
 Config.Jail = {
     -- Total sentence is the sum of the charges, capped.
     maxSeconds = 600,
+    -- /jail with no number uses this (the arrest's own sentence is preferred).
+    defaultSeconds = 120,
+    -- Keep this many booking records.
+    history = 200,
     -- Time served counts double while the player waits at the station? No -
     -- keep it simple and honest: real seconds.
     releaseRadius = 6.0,
@@ -262,6 +336,141 @@ Config.Seed = {
 }
 
 -- ---------------------------------------------------------------------------
+-- Justice: fines, warrants, BOLOs, reports, shifts, impound, pursuits, field work
+-- ---------------------------------------------------------------------------
+-- Everything below is server-side bookkeeping. The client can ask for any of
+-- it, but every amount, id and deadline is decided here.
+
+-- The citation/arrest ledger. A fine becomes overdue after `paymentDays`, and
+-- an overdue fine suspends the person's licence and (optionally) issues a
+-- warrant - that is what makes an unpaid ticket turn into a traffic stop with
+-- consequences later.
+Config.Justice = {
+    paymentDays = 7,
+    -- Interest is not simulated; the fine is the fine.
+    suspensionOnOverdue = true,
+    warrantOnOverdue = true,
+    overdueCharge = 'unpaid_fines',
+    maxFines = 400,
+    -- What the department book (records.department.balance) is called in chat.
+    departmentLabel = 'LSPD court fund',
+}
+
+-- Warrants are stored twice on purpose: on the person (so a stop shows them)
+-- and in records.warrants (so the MDT and the court can list and revoke them).
+Config.Warrants = {
+    defaultDays = 30,
+    max = 250,
+}
+
+-- BOLOs: plates and names dispatch wants flagged. They expire on their own.
+Config.Bolo = {
+    defaultMinutes = 120,
+    max = 120,
+    -- A BOLO hit makes the ANPR in the HUD flash.
+    alertRadius = 300.0,
+}
+
+-- Incident reports written in the MDT.
+Config.Reports = {
+    max = 250,
+    minTitle = 3,
+    maxTitle = 80,
+    minBody = 10,
+    maxBody = 4000,
+    maxSubjects = 6,
+    kinds = { 'incident', 'supplement', 'use_of_force', 'citation_note' },
+    -- XP for a filed report: paperwork is part of the job.
+    xp = 15,
+}
+
+-- A shift is a duty session. Pay is rank salary prorated over `fullShiftMinutes`
+-- plus a bonus per citation/arrest/callout, capped at `maxPay`.
+Config.Shift = {
+    fullShiftMinutes = 60,
+    minMinutes = 1,
+    citationBonus = 50,
+    arrestBonus = 120,
+    calloutBonus = 80,
+    reportBonus = 25,
+    maxPay = 5000,
+    maxHistory = 100,
+}
+
+-- The impound lot. Releasing a car costs the officer the fee (it is the
+-- citizen's money in roleplay, but it is the player's bank here).
+Config.Impound = {
+    fee = 500,
+    stolenSurcharge = 750,
+    -- Cars stay on the lot this long before they are "scrapped" (record only).
+    maxDays = 7,
+    max = 250,
+}
+
+-- Pursuits: started from a stop or an accepted callout, ended with an outcome.
+Config.Pursuit = {
+    maxSeconds = 900,
+    -- Offer code 3 backup when a pursuit starts.
+    autoBackup = true,
+    backupKind = 'code3',
+    -- Air support is offered again after this many seconds.
+    airAfter = 120,
+    outcomes = { 'arrested', 'escaped', 'terminated', 'crashed' },
+    max = 200,
+}
+
+-- Field work: frisking, breath tests, K9 and radar.
+Config.Field = {
+    -- 0.08 % is the legal limit; anything at or above it is a DUI.
+    duiLimit = 0.08,
+    breathMax = 0.199,
+    -- Frisking a person rolls against their name, so the same person always
+    -- carries the same pockets. `flag` items only show up when the person has
+    -- that charge in their record.
+    frisk = {
+        { id = 'drugs', label = 'bag of narcotics', chance = 0.30, flag = 'possession', qty = { 1, 3 } },
+        { id = 'weapon', label = 'concealed pistol', chance = 0.22, flag = 'armed_robbery', qty = { 1, 1 } },
+        { id = 'knife', label = 'folding knife', chance = 0.18, qty = { 1, 1 } },
+        { id = 'cash', label = 'roll of cash', chance = 0.35, qty = { 1, 4 } },
+        { id = 'lockpick', label = 'lockpick set', chance = 0.15, qty = { 1, 1 } },
+        { id = 'radio', label = 'police scanner', chance = 0.12, qty = { 1, 1 } },
+    },
+    -- A warrant makes the person more likely to be carrying something.
+    warrantBonus = 0.15,
+    -- Spike strips (client-side prop, burst tyres for this long).
+    spikes = true,
+    spikeSeconds = 120,
+    k9 = {
+        model = 'a_c_shepherd',
+        radius = 18.0,
+        -- How long the dog works before it answers (seconds).
+        searchSeconds = 4,
+        hits = { 'possession', 'armed_robbery', 'grand_theft_auto' },
+    },
+}
+
+-- The radar in the HUD.
+Config.Radar = {
+    enabled = true,
+    -- Only read cars this far in front of the patrol car.
+    maxDistance = 60.0,
+    -- Below this speed (m/s) the radar does not bother showing a reading.
+    minSpeed = 4.0,
+    -- Ask the server about the plate automatically when it is read.
+    autoAnpr = true,
+}
+
+-- The on-screen HUD (duty, rank, XP, shift timer, callout, radar, BOLOs).
+Config.Hud = {
+    enabled = true,
+    -- Refresh rate of the HUD payload, in milliseconds.
+    interval = 500,
+    showRadar = true,
+    showShift = true,
+    showXp = true,
+}
+
+-- ---------------------------------------------------------------------------
 -- Keys and commands
 -- ---------------------------------------------------------------------------
 Config.Keys = {
@@ -284,6 +493,17 @@ Config.Commands = {
     callout = 'callout',
     forceCallout = 'callout_force',
     status = 'pdstatus',
+    report = 'report',
+    bolo = 'bolo',
+    warrant = 'warrant',
+    fine = 'fine',
+    impound = 'impound',
+    pursuit = 'pursuit',
+    frisk = 'frisk',
+    breath = 'breath',
+    k9 = 'k9',
+    radar = 'radar',
+    bodycam = 'bodycam',
 }
 
 -- ---------------------------------------------------------------------------

@@ -20,25 +20,38 @@ preview/             <- dev-only browser preview of the UI (not shipped to the s
 
 ## fk_police
 
-The police job. It takes LSPDFR's systems — duty, locker, police computer, traffic
-stops, citations, arrests, dispatch callouts, backup, rank progression — and implements
-them natively, because LSPDFR runs on RAGE Plugin Hook and single-player GTA V and
-cannot be installed on a FiveM server. The full feature-by-feature mapping, key table
-and behaviour differences are in [`docs/LSPDFR.md`](docs/LSPDFR.md).
+The police job — the biggest piece of the project. It takes LSPDFR's systems (duty,
+uniform, police computer, traffic stops, citations, arrests, dispatch callouts, backup,
+rank progression) and adds the parts a server-based job needs to actually run: a fine
+ledger that goes overdue, warrants, BOLOs, a radar/ANPR, incident reports, an impound
+lot, pursuits, a cell, field work and paid shifts. LSPDFR itself cannot be installed
+(it runs on RAGE Plugin Hook in single-player GTA V), so all of it is native FiveM,
+with the server as the only authority.
+
+Full feature-by-feature mapping, keys and behaviour differences:
+[`docs/LSPDFR.md`](docs/LSPDFR.md).
 
 ### What it does
 
-| Feature | Detail |
+| Area | Detail |
 | --- | --- |
-| **Duty & station** | Mission Row marker (**E**) offers duty, locker, armoury, garage, computer and jail. Going on duty puts the uniform on; going off duty puts your own clothes back |
-| **MDT** | Five-tab NUI page (**F9**, or **E** in a police car): **People**, **Vehicles**, **Calls**, **Charges**, **Backup**. Name and plate lookups return licence/registration/insurance state, stolen flags and warrants |
-| **Traffic stops** | **F10** (or `/stop`) stops the car in front, reports the plate, owner and every flag, and holds the driver for `Config.Traffic.waitSeconds` |
-| **Citations** | `/cite` (**F6**) picks from `Config.Charges`, sums the fine and jail time, files a citation and pays the officer |
-| **Arrests & jail** | `/arrest` (**F7**) cuffs and books the suspect, clears the warrant, and holds them in a cell for the sentence (capped at `Config.Jail.maxSeconds`) |
-| **Dispatch** | Server-side dispatch issues weighted callouts (`Config.Callouts`) with a radio code, a scene 120–550 m away and an accept window; **Y** accepts, **X** forces one |
-| **Backup** | Code 2/3, air support, K9, SWAT, EMS and fire (**G**, or the MDT *Backup* tab); units spawn nearby and drive to you |
-| **Ranks & pay** | XP from callouts, citations and arrests; `Config.Ranks` sets thresholds and salary, `Config.Pay` sets fees and the officer's share of each fine |
-| **Records** | `fk_police/data/records.json` — people, vehicles, citations, arrests and officer progression, crash-safe (`.bak` + snapshots) |
+| **Duty & station** | Mission Row marker (**E**): duty, locker, armoury, garage, computer, jail. Duty puts the uniform on and starts a **shift**; leaving duty pays the shift and puts your own clothes back. |
+| **HUD** | Top-right overlay while on duty: rank, XP bar, shift timer, active callout with live distance, radar speed + plate with an ANPR alert, backup ETA, pursuit timer, custody timer and a bodycam REC chip. |
+| **MDT** (9 tabs) | **People**, **Vehicles**, **Calls**, **Charges**, **BOLOs** (+ warrants), **Reports**, **Fines**, **Impound**, **Shift** (counters, history, pursuits). Search results carry warrants, BOLOs, impound state and what the person owes. |
+| **Dispatch** | 11 weighted callout types; a scene 120–550 m away; **Y** accepts, **X** asks dispatch now. Accepting populates the scene with armed suspects. |
+| **Traffic stops** | **F10** stops the car in front: plate, owner, registration, insurance, stolen status, BOLOs, warrants, outstanding fines and impound state. The driver waits `Config.Traffic.waitSeconds`. |
+| **Citations & fines** | **F6** writes a citation from `Config.Charges`; the fine is priced on the server, the officer is paid a fee + share, and a **ledger entry** is created with a due date. |
+| **Fines ledger** | Unpaid fines appear in the MDT with the amount owed and the due date. Collect (full or part), waive, or let the **court sweep** run when you next go on duty: overdue fines **suspend the licence** and put out an **unpaid-fines warrant**. |
+| **Warrants** | Issue from a person record or `/warrant add`, revoke, auto-expire; they show on every lookup and stop, and an arrest clears the warrant it was made for. |
+| **BOLOs & ANPR** | Vehicle/person BOLOs with an expiry, cleared from the MDT or `/bolo`. The radar reads the plate in front and the ANPR flags stolen cars, BOLOs, expired papers and warrants in chat and on the HUD. |
+| **Arrests & custody** | **F7** cuffs and books: fine + sentence, warrant cleared, arrest record. `/jail` (or **Book** in the flow) walks the suspect into the cell for the sentence; release early or let it run out. |
+| **Reports** | `/report <title>` opens a draft; the MDT form stores kind, title, body, subjects, plate and charges, awards XP, and lists/search them. |
+| **Impound** | `/impound [reason]` seizes the stopped car (stolen cars carry a surcharge), the lot is in the MDT, and releasing a car takes the fee from the bank into the court fund. |
+| **Pursuits** | `/pursuit start` (needs a stop or an accepted callout) auto-requests code 3, `/pit` spins a car, `/spikes` deploys a 2-minute stinger, `/pursuit end <outcome>` logs it and pays XP for an arrest. |
+| **Field work** | `/frisk` (deterministic pockets per person), `/breath` (breath test against the 0.08 limit, suggests the DUI charge), `/k9` (the dog works the stopped car). |
+| **Backup** | Code 2/3, air, K9, SWAT, EMS and fire, each with its own model, unit count and ETA; the HUD counts the ETA down. |
+| **Ranks & pay** | XP from callouts, citations, arrests, reports and pursuits; `Config.Ranks` sets thresholds and salary; `Config.Pay` the roadside fees and the officer's fine share. |
+| **Records** | `fk_police/data/records.json` — people, vehicles, citations, arrests, officers, fines, warrants, BOLOs, reports, impounds, shifts, pursuits, bookings, court fund. Crash-safe (`Persist`: `.bak` + rotating snapshots). |
 
 ### Install
 
@@ -46,99 +59,134 @@ and behaviour differences are in [`docs/LSPDFR.md`](docs/LSPDFR.md).
 2. `server.cfg`:
 
    ```cfg
-   ensure fk_economy     # money (fk_police pays into it)
+   ensure fk_economy     # money (fk_police pays into it and takes impound fees from it)
    ensure fk_spawn
    ensure fk_house
    ensure fk_police
    ensure fk_boot
    ```
 
-`fk_police/fxmanifest.lua` declares `dependencies { 'fk_economy' }`, so the server will
-refuse to start the job before the economy is up.
+`fk_police/fxmanifest.lua` declares `dependencies { 'fk_economy' }`, so the job will not
+start before the economy is up.
 
 ### Keys
 
 | Key | Action |
 | --- | --- |
-| **E** | Interact (station services, callout scene, MDT in a police car) |
+| **E** | Interact: station services, callout scene, MDT in a police car |
 | **M** | Police menu (`/pd`) |
-| **G** | Backup menu |
+| **G** | Backup menu (code 3) |
+| **F5** | Radar on/off |
+| **F6** / **F7** | Cite / arrest the current stop |
 | **F9** | MDT |
 | **F10** | Traffic stop the vehicle in front |
-| **F11** | Go on/off duty |
+| **F11** | Go on / off duty |
+| **L** | Bodycam on/off |
+| **X** | Ask dispatch for a call now |
 | **Y** | Accept the current callout |
-| **X** | Force a callout |
-| **F6** / **F7** | Cite / arrest the current stop |
 
 Every key is a `RegisterKeyMapping`, so it can be rebound in *Settings → Key bindings →
-FiveM*. The commands behind them (`/duty`, `/stop`, `/cite`, `/arrest`, `/backup`,
-`/callout`, `/pd status`) work without the keys.
+FiveM*, and every command works without the key.
 
 ### Commands
 
 | Command | What it does |
 | --- | --- |
-| `/pd` | Police menu (also `/pd locker`, `/pd armoury`, `/pd garage <model>`, `/pd charges`) |
-| `/duty` | On/off duty |
+| `/police` | Print the whole command list in chat |
+| `/pd` | Police menu (`/pd locker`, `/pd armoury`, `/pd garage`, `/pd car <model>`, `/pd charges`) |
+| `/duty` | On/off duty (a shift starts and ends with it) |
+| `/pc` | Police computer (MDT) |
 | `/stop` | Traffic stop the vehicle in front |
 | `/cite <charge> ...` | Cite the current stop |
 | `/arrest <charge> ...` | Arrest the current stop |
-| `/callout` | Accept the current callout (same as **Y**) |
-| `/callout_force` | Dispatch a callout now (single player convenience) |
+| `/jail [seconds]` \| `/jail release` \| `/jail status` | Book / release / check the suspect in custody |
+| `/frisk [name]`, `/breath [name]`, `/k9` | Field work on the stop |
 | `/backup <code2\|code3\|air\|k9\|swat\|ems\|fire>` | Request backup |
-| `/pdstatus` | Console/chat: officers tracked, on-duty count, the active callout |
-| `/pdxp <id> <amount>` | Console only: commend a player (testing/progression) |
+| `/callout`, `/callout_force` | Accept a callout / ask dispatch now |
+| `/pursuit start\|end <outcome>\|status`, `/pit`, `/spikes` | Pursuits |
+| `/report <title>` | Start an incident report in the MDT |
+| `/bolo add <plate\|person <name>> <reason>`, `/bolo list`, `/bolo clear <id>` | BOLOs |
+| `/warrant add <name> <charge>`, `/warrant list`, `/warrant revoke <id>` | Warrants |
+| `/fine list [name]`, `/fine collect <id> [amount]`, `/fine waive <id>`, `/fine sweep` | The fine ledger |
+| `/impound [reason]`, `/impound list`, `/impound release <id>` | Impound lot |
+| `/shift`, `/shift end` | Shift summary / end the shift |
+| `/radar`, `/bodycam` | Toggles |
+| `/pdstatus`, `/pdxp <id> <amount>` | Status (chat/console), console commendation |
 
 ### Server API
 
 ```lua
-exports.fk_police:GetStatus(src)       -- { onDuty, rank, xp, citations, arrests, callsign, ... }
-exports.fk_police:IsOnDuty(src)        -- boolean
-exports.fk_police:SetDuty(src, true)   -- same as /duty
-exports.fk_police:GetRecords()         -- { people, vehicles, citations, arrests }
+exports.fk_police:GetStatus(src)          -- rank, xp, shift timer, custody timer, pursuit flag
+exports.fk_police:IsOnDuty(src)
+exports.fk_police:SetDuty(src, true)
+exports.fk_police:GetShift(src)           -- live counters + projected pay
+exports.fk_police:EndShift(src, 'reason')
+exports.fk_police:GetRecords()            -- the whole record store
+exports.fk_police:GetMdt(src)             -- exactly what the MDT page renders
 exports.fk_police:Search(src, 'vehicle', 'MARCUS1')
 exports.fk_police:StartStop(src, plate, model)
 exports.fk_police:Cite(src, { 'speeding' })
 exports.fk_police:Arrest(src, { 'assault' })
+exports.fk_police:BookSuspect(src, 120)
+exports.fk_police:Custody(src)
+exports.fk_police:ListFines({ person = 'Marcus Vance' })
+exports.fk_police:CollectFine(src, id, amount)
+exports.fk_police:SweepOverdue()
+exports.fk_police:ListWarrants({ active = true })
+exports.fk_police:IssueWarrant(src, { person = 'Tasha Bell', charge = 'burglary' })
+exports.fk_police:ListBolos()
+exports.fk_police:AddBolo(src, 'vehicle', 'OWEN555', 'Robbery getaway', 120)
+exports.fk_police:ListReports(query)
+exports.fk_police:FileReport(src, { title = '...', body = '...' })
+exports.fk_police:ListImpounds({ released = false })
+exports.fk_police:ImpoundVehicle(src, 'stolen recovery')
+exports.fk_police:ReleaseImpound(src, id)
+exports.fk_police:PursuitState(src)
+exports.fk_police:Frisk(src), Breathalyzer(src), K9(src)
 exports.fk_police:ResolveCallout(src, coords)
 exports.fk_police:RequestBackup(src, 'code3')
 ```
 
-Every export validates the caller the same way the net events do — they are for other
+Every export validates the caller exactly like the net events — they are for other
 resources on this server, not a way around the checks.
 
 ### Configuration
 
-`fk_police/config.lua`, in the order you will want to touch it:
+`fk_police/config.lua`:
 
 | Key | What it decides |
 | --- | --- |
-| `Config.Singleplayer` | No rate limits, one callout at a time (default `true`) |
+| `Config.Singleplayer` | No rate limits, one callout at a time |
 | `Config.Stations` | Station coords, services, garage/jail spots |
-| `Config.Uniform`, `Config.Loadout` | Duty uniform components and the armoury loadout |
-| `Config.Vehicles` | What the police garage will spawn |
-| `Config.Ranks`, `Config.Pay` | XP thresholds, salary, fees and the officer's fine share |
-| `Config.Dispatch`, `Config.Callouts` | Callout timing, distance, expiry, weights, XP and charges |
-| `Config.Charges` | Every charge id, fine, jail seconds and type |
-| `Config.Traffic`, `Config.Jail`, `Config.Backup` | Stop distance, sentence cap and cell, backup units |
-| `Config.Records`, `Config.Seed` | Record file, retention and the starter population |
+| `Config.Uniform`, `Config.Loadout`, `Config.Vehicles` | Duty look and what the garage spawns |
+| `Config.Ranks`, `Config.Pay`, `Config.Shift` | XP thresholds, roadside fees, shift salary and bonuses |
+| `Config.Dispatch`, `Config.Callouts` | Timing, distance, expiry, weights, suspects, XP, charges |
+| `Config.Charges` | Every charge: fine, jail seconds, type |
+| `Config.Traffic`, `Config.Jail`, `Config.Backup` | Stop distance, sentences and the cell, backup units |
+| `Config.Justice` | Fine due date, overdue suspension/warrant, ledger size |
+| `Config.Warrants`, `Config.Bolo` | Expiry and caps |
+| `Config.Reports` | Field lengths, kinds, XP, cap |
+| `Config.Impound`, `Config.Pursuit` | Fees, outcomes, caps |
+| `Config.Field` | Frisk table, DUI limit, K9, spike strips |
+| `Config.Radar`, `Config.Hud` | Radar range, HUD refresh |
+| `Config.Records`, `Config.Seed` | Record file, retention, starter population |
 | `Config.Keys`, `Config.Commands` | Key codes and command names |
 
 ### Data file
 
 | File | Contents |
 | --- | --- |
-| `data/records.json` | `people`, `vehicles`, `citations`, `arrests`, `officers` (XP, citations, arrests, callsign) |
+| `data/records.json` | `people`, `vehicles`, `citations`, `arrests`, `officers`, `fines`, `warrants`, `bolos`, `reports`, `impounds`, `shifts`, `pursuits`, `bookings`, `department` |
 
-Written through the same `Persist` helper as the other resources: `.bak.json` fallback
-and rotating snapshots, so a killed server cannot lose the record store.
+Written through the same `Persist` helper as the other resources (`.bak` fallback and
+rotating snapshots), so a killed server cannot lose the record store.
 
 ### Single-player
 
-The police job assumes it is the only officer on the server: one dispatch board, one
-active callout, no staff queue, no shared callout claims and no rate limits
-(`Config.Singleplayer = true`). Nothing about authority changes — the server still
-prices every charge, writes every record and moves every dollar through `fk_economy`.
+The job assumes it is the only officer online: one dispatch board, one active callout,
+no staff queue, no shared callout claims and no rate limits (`Config.Singleplayer =
+true`). Authority does not change — the server still prices every charge, decides every
+deadline, writes every record and moves every dollar through `fk_economy`.
 
 ---
 
@@ -913,7 +961,7 @@ with mocked FiveM natives, and the NUI page runs in jsdom.
 
 ```bash
 npm install
-npm run check   # lint every Lua file + all 557 checks
+npm run check   # lint every Lua file + all 713 checks
 ```
 
 * **124 economy checks** — starting balances, overdraft refusal, invalid
@@ -966,7 +1014,7 @@ npm run check   # lint every Lua file + all 557 checks
   **join timeline** (streaming → `spawn_pending` → `complete`, the console lines, and
   `/joinstatus` in both states), and the single-player warning (printed once instead of
   every 15 s).
-* **96 fk_police checks** — plate/name normalisation, person and vehicle records, flags and
+* **252 fk_police checks** — plate/name normalisation, person and vehicle records, flags and
   warrants, sentence maths (unknown charges ignored, duplicates counted once), ranks and
   callout weights; then the real server: seeding, duty and statebags, searches (on/off
   duty, unknown plates and kinds), traffic stops, citations (fine ✓, fee + fine share paid
@@ -977,8 +1025,23 @@ npm run check   # lint every Lua file + all 557 checks
   and persistence (XP, warrants and citations all survive a restart); plus the MDT page in
   jsdom (hidden by default, header/rank/duty pill, charges table, vehicle results with bad
   flags, "no record", callout card with accept/decline, closing), and the static checks
-  the VM cannot make (key mappings, the four NUI callbacks, the stop being dropped on
-  arrest, no hardcoded localhost in the page, no `backdrop-filter`).
+  the VM cannot make (key mappings, the NUI callbacks, the stop being dropped on arrest,
+  no hardcoded localhost in the page, no `backdrop-filter`); then the justice layer:
+  fines (created by a citation, part-payments, over-payment clamping, waiving, the
+  overdue sweep suspending a licence and putting out a warrant, the court fund), warrants
+  (issue, duplicate refusal, revoke, the board keeping the record), BOLOs (add, duplicate,
+  expiry, plates and people, stops and lookups), reports (validation, subject dedupe,
+  search, XP), custody (booking from an arrest, the sentence cap, early release, natural
+  expiry, the record store), impound (stop requirement, stolen surcharge, double-impound
+  refusal, release fee from the bank, no money in the bank), pursuits (reason required,
+  backup auto-call, clock, outcomes, XP, the log), field work (deterministic frisk, breath
+  range, K9), shifts (start on duty, counters, salary proration, bonuses, the short-shift
+  rule, history), the whole MDT bundle, persistence of every new section, the expanded
+  HUD in jsdom (rank/XP bar, shift timer, callout distance, radar + alert, backup ETA,
+  pursuit and custody chips, hidden off duty or behind the MDT), the nine MDT tabs with
+  working BOLO/report/fine/impound/warrant buttons, and three contract checks that every
+  `Config.<key>`, `Mdt.<fn>`, net event and NUI callback the code references actually
+  exists.
 
 ## Troubleshooting
 
@@ -1021,8 +1084,8 @@ loader and the police job itself. Still open:
    pays per callout/citation/arrest).
 3. Impound fees and vehicle purchases — the garage and the records store are the hooks.
 4. A court/verdict layer on top of `Config.Charges` (`type` already separates infractions,
-   misdemeanors and felonies).
-5. Pursuit AI and roadblocks/spike strips (see the "behaviour differences" table in
-   [`docs/LSPDFR.md`](docs/LSPDFR.md)).
+   misdemeanors and felonies) and a judge NPC.
+5. Pursuit AI for the suspect vehicles (the officer side, PIT and spike strips, are in).
+6. Court-issued BOLO subscriptions, so a BOLO can come from the economy's staff tools.
 
 See [`docs/INTEGRATION.md`](docs/INTEGRATION.md) for the patterns to use when adding to it.

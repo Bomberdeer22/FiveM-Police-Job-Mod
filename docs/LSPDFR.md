@@ -28,8 +28,17 @@ descriptions (`lcpdfr.com`, `gta5mods.com`) and the Charges Reborn code list
 | **Callout pressure** | Callouts expire if ignored, one at a time | `Config.Dispatch.expireAfter` (420 s) and `maxActive = 1` — a single-player server has exactly one officer to send |
 | **Backup** | Code 2 / Code 3, air, K9, SWAT, EMS, fire | `Config.Backup` + the MDT *Backup* tab and `/backup` (**G**): units spawn at `spawnDistance`, drive to the scene, and the unit count/delay/vehicle come from config |
 | **Ranks & progression** | Not in base LSPDFR (mods add it) | `Config.Ranks` (XP thresholds + salary) and `Config.Pay` (per callout/citation/arrest plus a share of the fine). Money goes through `fk_economy:AddMoney`, so the job feeds the same bank account as everything else |
-| **ANPR** | Automatic plate reading while patrolling | The MDT *Vehicles* tab reads the plate of the car in front of the officer; `/stop` reports flags (stolen, expired registration/insurance, warrant on the owner) |
-| **Interaction menu** | Stop The Ped style menu on the stopped driver | `/pd` menu (**M**) and the on-scene **E** prompt at a callout, with the MDT one key away |
+| **ANPR** | Automatic plate reading while patrolling | The HUD radar (**F5**) reads the plate of the car in front, and the server checks it (`fk_police:server:anpr`): stolen, BOLO, expired papers, owner warrants. Alerts go to chat and flash on the HUD |
+| **Interaction menu** | Stop The Ped style menu on the stopped driver | `/frisk`, `/breath` and `/k9` on the stopped driver, plus the `/pd` menu (**M**) and the on-scene **E** prompt |
+| **BOLOs / APB** | Plates and people dispatch wants flagged | MDT **BOLOs** tab (and `/bolo`): vehicle or person, a reason and an expiry. They show on stops, lookups and the ANPR |
+| **Warrants** | Court warrants attached to a person | MDT person result → *Issue warrant*, or `/warrant add`. An arrest clears the warrant it was made for. Warrants expire |
+| **Fines** | Citations are money the driver owes | Every citation creates a **ledger entry** with a due date. Collect (full/part) or waive in the MDT; the **court sweep** on duty suspends licences and puts out warrants for overdue fines |
+| **Reports / paperwork** | Incident and use-of-force reports | `/report <title>` + the MDT **Reports** tab: kind, title, body, subjects, plate, charges, XP |
+| **Impound / vehicle seizure** | Seized vehicles, release fees | `/impound` from a live stop (stolen cars cost more), the **Impound** tab, and release takes the fee |
+| **Pursuits** | Chases, PIT, spike strips, air support | `/pursuit start` (auto code 3), `/pit`, `/spikes` (2-minute stinger), `/pursuit end <outcome>`; the log is in the **Shift** tab |
+| **Booking / jail** | Transport, cells, release | `/jail` books the arrested suspect into the cell for the sentence, with a live custody timer on the HUD; `/jail release` lets them out |
+| **Shifts** | Not in base LSPDFR | Duty starts a shift; the HUD and MDT show length, citations, arrests, callouts and pay; going off duty pays rank salary (prorated) + per-action bonuses and writes a shift record |
+| **Bodycam** | Equipment | **L** toggles it; the HUD shows a REC chip |
 
 ---
 
@@ -43,14 +52,15 @@ the originals — **B** is the radio wheel, **F4** opens nothing we can use).
 | --- | --- | --- | --- |
 | **E** | Interact: station services, on-scene prompt, MDT inside a police car | Interact / arrest / computer | `Config.Keys.interact` / `computer` (38) |
 | **M** | Police interaction menu (`/pd`) | Interaction menu (Stop The Ped uses **N**) | `Config.Keys.menu` (244) |
-| **G** | Backup menu (`backup_code3` etc.) | **B** = backup | `Config.Keys.backup` (47) — **B** is the radio wheel in FiveM, so backup moved to **G** |
-| **F10** | Traffic stop the vehicle in front | Left Shift | FiveM's default `Left Shift` is sprint; **F10** is free |
+| **G** | Backup (`backup_code3`) | **B** = backup | **B** is the radio wheel in FiveM, so backup moved to **G** |
+| **F5** | Radar / ANPR on-off | — | LSPDFR's radar is always on; here it is a toggle |
+| **F6** / **F7** | Cite / arrest the current stop | — | The two ends of a stop |
 | **F9** | Police computer (MDT) | **Q** | `Q` is a weapon/cover key in FiveM, so the computer sits on **F9** |
-| **Y** | Accept the current callout | **Y** | Unchanged |
-| **X** | Force a callout (`/callout_force`) | **X** | Unchanged |
+| **F10** | Traffic stop the vehicle in front | Left Shift | FiveM's default `Left Shift` is sprint; **F10** is free |
 | **F11** | Go on/off duty (`/duty`) | Space+F9 (force duty) | `Space+F9` is not a mappable pair; **F11** is |
-| **F6** | `/cite` the current stop | — | Citation shortcut |
-| **F7** | `/arrest` the current stop | — | Arrest shortcut |
+| **L** | Bodycam | Equipment toggle | Free key in FiveM |
+| **X** | Force a callout (`/callout_force`) | **X** | Unchanged |
+| **Y** | Accept the current callout | **Y** | Unchanged |
 
 All of these are `RegisterKeyMapping` entries, so **Settings → Key bindings →
 FiveM** lets the player rebind them. The commands work without the keys, which is
@@ -70,6 +80,20 @@ also how they are tested.
 
 ---
 
+## 3b. The systems LSPDFR does not have
+
+A server job needs a few things the single-player plugin never did, so they were added
+rather than copied:
+
+| System | Why |
+| --- | --- |
+| **Fine ledger with due dates** | A citation is only interesting if it comes back: overdue fines suspend a licence and put out a warrant |
+| **Court fund** | Fines the citizen "settles" go somewhere — `records.department.balance`, shown in the MDT header |
+| **Shifts** | LSPDFR has no economy; here the job pays a salary and per-action bonuses, so a duty session has a beginning, an end and a payslip |
+| **BOLOs with expiry** | A dispatch board that cleans itself up |
+| **Custody timer** | The sentence from the arrest is served somewhere, and you can see it on the HUD |
+| **Persistence** | Records, fines, warrants, reports and shifts all survive a restart (`.bak` + snapshots) |
+
 ## 4. What stays server-authoritative
 
 Everything that touches money, records or XP lives in `fk_police/server/main.lua`:
@@ -79,7 +103,13 @@ Everything that touches money, records or XP lives in `fk_police/server/main.lua
 | `search` | Requires duty (unless `Config.Singleplayer`), rate-limited otherwise; reads the records store, never the client |
 | `stop` | Plate must be readable, the stop must be started by the officer, expires after 300 s |
 | `cite` / `arrest` | Need a live stop; charge ids are re-priced from `Config.Charges`; the fine/pay split comes from `Config.Pay` |
-| `arrest` | Clears the warrant, writes the arrest record, books the suspect |
+| `arrest` | Clears the warrant, writes the arrest record, creates the fine, remembers the arrest for `/jail` |
+| `book` / `release` | Needs an arrest (or a live stop); the sentence is capped by `Config.Jail.maxSeconds`; the booking is written to the records |
+| `fines` | Amounts and due dates are set server-side; a payment can never exceed what is owed; the court fund is server-side |
+| `warrants` / `bolos` | Validated names/plates, deduplicated, expiring; only an on-duty officer can add or clear one |
+| `reports` | Length limits and subject dedupe in `Mdt.validateReport`; unknown charge ids are dropped |
+| `impound` | Needs a live stop, one open impound per plate; the release fee is taken through `fk_economy:RemoveMoney` and only if the bank can cover it |
+| `pursuit` | Needs a stop or an accepted callout; the outcome must be one of `Config.Pursuit.outcomes` |
 | `callout:resolve` | The callout must be `accepted` **and** the client must report coords within `Config.Dispatch.sceneRadius` (12 m) of the scene |
 | money | Only through `exports['fk_economy']:AddMoney(source, 'bank', n, reason)` |
 | records | `data/records.json`, written by `Persist` (`.bak` fallback, same as the other resources) |
@@ -98,7 +128,9 @@ comes back. It has no copy of the charges, the prices or the records.
 * `maxActive = 1` callouts, owned by the only officer;
 * the MDT opens without a "who is asking" handshake, because the answer is always you;
 * the records, the officer table and the callouts all live in one process, so no
-  cross-player locks or queues exist.
+  cross-player locks or queues exist;
+* the court sweep runs when *you* go on duty (there is no other officer to run it);
+* one suspect can be in custody at a time, because there is one of you.
 
 The rest of the job is unchanged: money and records are still validated on the
 server, so a client cannot write itself a citation or a payday.

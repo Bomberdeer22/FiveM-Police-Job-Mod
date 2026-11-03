@@ -1,69 +1,183 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8" />
-<title>LSPD Mobile Data Terminal</title>
-<link rel="stylesheet" href="style.css" />
+<meta charset="utf-8">
+<title>LSPD MDT</title>
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <main id="mdt" class="is-hidden" aria-hidden="true">
-    <header>
-      <div class="brand">
-        <span class="badge">LSPD</span>
-        <div>
-          <h1>Mobile Data Terminal</h1>
-          <p id="officer">Cadet &middot; 0 XP</p>
-        </div>
-      </div>
-      <div class="calls">
-        <span id="duty" class="pill">OFF DUTY</span>
-        <button id="close" class="ghost" type="button">Close (Esc)</button>
-      </div>
-    </header>
+<!-- The HUD is always mounted and only shown while on duty. -->
+<div id="hud" class="hud is-hidden" aria-hidden="true">
+  <div class="hud-top">
+    <span class="hud-badge">LSPD</span>
+    <div class="hud-rank-wrap">
+      <div class="hud-rank" id="hud-rank">Cadet</div>
+      <div class="hud-bar"><i id="hud-xp"></i></div>
+    </div>
+    <span class="hud-shift" id="hud-shift">0m</span>
+  </div>
 
-    <nav>
-      <button class="tab is-active" data-tab="people" type="button">Person lookup</button>
-      <button class="tab" data-tab="vehicles" type="button">Vehicle lookup</button>
-      <button class="tab" data-tab="calls" type="button">Calls</button>
-      <button class="tab" data-tab="charges" type="button">Charges</button>
-      <button class="tab" data-tab="backup" type="button">Backup</button>
-    </nav>
+  <div class="hud-callout is-hidden" id="hud-callout">
+    <strong id="callout-code">10-31</strong>
+    <span id="callout-label">Callout</span>
+    <span class="hud-distance" id="callout-distance">0 m</span>
+  </div>
 
+  <div class="hud-radar is-hidden" id="hud-radar">
+    <span class="hud-speed" id="radar-speed">0</span><small>MPH</small>
+    <span class="hud-plate" id="radar-plate">—</span>
+    <span class="hud-alert is-hidden" id="radar-alert">ALERT</span>
+  </div>
+
+  <div class="hud-chips">
+    <span class="chip is-hidden" id="hud-backup"></span>
+    <span class="chip is-hidden" id="hud-pursuit"></span>
+    <span class="chip is-hidden" id="hud-custody"></span>
+    <span class="chip is-hidden" id="hud-bodycam">● REC</span>
+  </div>
+</div>
+
+<div id="mdt" class="is-hidden" aria-hidden="true">
+  <header class="mdt-header">
+    <div class="brand">
+      <span class="badge">LSPD</span>
+      <div>
+        <h1>Mobile Data Terminal</h1>
+        <p id="officer">Officer</p>
+      </div>
+    </div>
+    <div class="header-right">
+      <span id="fund" class="fund">Court fund $0</span>
+      <span id="duty" class="pill">OFF DUTY</span>
+      <button id="close" class="ghost" title="Close (Esc)">Close</button>
+    </div>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button class="tab is-active" data-tab="people" role="tab">People</button>
+    <button class="tab" data-tab="vehicles" role="tab">Vehicles</button>
+    <button class="tab" data-tab="calls" role="tab">Calls</button>
+    <button class="tab" data-tab="charges" role="tab">Charges</button>
+    <button class="tab" data-tab="bolo" role="tab">BOLOs</button>
+    <button class="tab" data-tab="reports" role="tab">Reports</button>
+    <button class="tab" data-tab="fines" role="tab">Fines</button>
+    <button class="tab" data-tab="impound" role="tab">Impound</button>
+    <button class="tab" data-tab="shift" role="tab">Shift</button>
+  </nav>
+
+  <main class="panels">
     <section class="panel is-active" id="panel-people">
-      <form class="search" id="form-people">
-        <input id="query-people" type="text" placeholder="Name, e.g. Marcus Vance" autocomplete="off" />
+      <form id="form-people" class="search">
+        <input id="query-people" type="search" placeholder="Name (or part of one)" autocomplete="off">
         <button type="submit">Run name</button>
       </form>
-      <p class="hint">Records show licence status, warrants and flags.</p>
+      <p class="hint">Searches the name records, warrants, BOLOs and the fine ledger.</p>
     </section>
 
     <section class="panel" id="panel-vehicles">
-      <form class="search" id="form-vehicles">
-        <input id="query-vehicles" type="text" placeholder="Plate, e.g. MARCUS1" autocomplete="off" />
+      <form id="form-vehicles" class="search">
+        <input id="query-vehicles" type="search" placeholder="Plate, e.g. MARCUS1" autocomplete="off">
         <button type="submit">Run plate</button>
       </form>
-      <p class="hint">Stolen, registration and insurance flags come from the vehicle record.</p>
+      <p class="hint">Registration, insurance, stolen status, BOLOs, owner warrants and impound state.</p>
     </section>
 
     <section class="panel" id="panel-calls">
-      <div id="calls-body"><p class="hint">No callout on the board.</p></div>
+      <div id="calls-body"></div>
+      <h2 class="sub">Backup</h2>
+      <div class="cards" id="backup-grid"></div>
+      <h2 class="sub">Scene actions</h2>
+      <div class="row">
+        <button id="verdict-impound" class="ghost">Impound the stopped car</button>
+      </div>
     </section>
 
     <section class="panel" id="panel-charges">
-      <table>
-        <thead><tr><th>Id</th><th>Charge</th><th>Fine</th><th>Jail</th><th>Type</th></tr></thead>
+      <table class="table">
+        <thead>
+          <tr><th>ID</th><th>Charge</th><th>Fine</th><th>Jail</th><th>Type</th></tr>
+        </thead>
         <tbody id="charges-body"></tbody>
       </table>
-      <p class="hint">Use /cite &lt;id...&gt; or /arrest &lt;id...&gt; on a stopped vehicle.</p>
     </section>
 
-    <section class="panel" id="panel-backup">
-      <div class="backup-grid" id="backup-body"></div>
-      <p class="hint">Backup units spawn nearby and drive to you.</p>
+    <section class="panel" id="panel-bolo">
+      <form id="form-bolo" class="stack">
+        <div class="row">
+          <select id="bolo-kind">
+            <option value="vehicle">Vehicle plate</option>
+            <option value="person">Person</option>
+          </select>
+          <input id="bolo-value" placeholder="Plate or full name" autocomplete="off">
+          <input id="bolo-minutes" type="number" min="1" max="1440" placeholder="Minutes" value="120">
+        </div>
+        <input id="bolo-reason" placeholder="Why dispatch wants it flagged" autocomplete="off">
+        <button type="submit">Put BOLO out</button>
+      </form>
+      <div id="bolo-list" class="list"></div>
+      <h2 class="sub">Warrants</h2>
+      <div id="warrant-list" class="list"></div>
     </section>
 
-    <section id="results" class="results"></section>
+    <section class="panel" id="panel-reports">
+      <form id="form-report" class="stack">
+        <div class="row">
+          <input id="report-title" placeholder="Report title" autocomplete="off">
+          <select id="report-kind">
+            <option value="incident">Incident</option>
+            <option value="supplement">Supplement</option>
+            <option value="use_of_force">Use of force</option>
+            <option value="citation_note">Citation note</option>
+          </select>
+        </div>
+        <div class="row">
+          <input id="report-subjects" placeholder="Subjects (comma separated)" autocomplete="off">
+          <input id="report-plate" placeholder="Plate (optional)" autocomplete="off">
+        </div>
+        <textarea id="report-body" rows="6" placeholder="What happened?"></textarea>
+        <div id="report-charges" class="chips"></div>
+        <button type="submit">File report</button>
+      </form>
+      <div id="report-list" class="list"></div>
+    </section>
+
+    <section class="panel" id="panel-fines">
+      <p class="hint" id="fines-totals">No fines on the ledger.</p>
+      <table class="table">
+        <thead>
+          <tr><th>ID</th><th>Person</th><th>Owed</th><th>Due</th><th>Status</th><th></th></tr>
+        </thead>
+        <tbody id="fines-body"></tbody>
+      </table>
+    </section>
+
+    <section class="panel" id="panel-impound">
+      <div id="impound-list" class="list"></div>
+    </section>
+
+    <section class="panel" id="panel-shift">
+      <div class="cards" id="shift-cards"></div>
+      <table class="table">
+        <thead>
+          <tr><th>Shift</th><th>Length</th><th>Citations</th><th>Arrests</th><th>Callouts</th><th>Pay</th></tr>
+        </thead>
+        <tbody id="shift-body"></tbody>
+      </table>
+      <h2 class="sub">Pursuits</h2>
+      <table class="table">
+        <thead>
+          <tr><th>ID</th><th>Length</th><th>Outcome</th><th>Plate</th></tr>
+        </thead>
+        <tbody id="pursuit-body"></tbody>
+      </table>
+    </section>
   </main>
-  <script src="app.js"></script>
+
+  <footer class="mdt-footer">
+    <div id="results" class="results"></div>
+  </footer>
+</div>
+
+<script src="app.js"></script>
 </body>
 </html>
