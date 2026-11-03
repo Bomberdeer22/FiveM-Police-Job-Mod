@@ -811,9 +811,12 @@ check('the MDT renders the evidence locker',
 check('the MDT renders the backup buttons from the config',
   /Code 3|code3/.test(text('backup-grid')), text('backup-grid'));
 
-check('the MDT lists nine tabs',
-  dom.window.document.querySelectorAll('.tab').length === 9,
+check('the MDT lists twelve tabs',
+  dom.window.document.querySelectorAll('.tab').length === 12,
   dom.window.document.querySelectorAll('.tab').length);
+check('every tab has a panel',
+  dom.window.document.querySelectorAll('.panel').length === 12,
+  dom.window.document.querySelectorAll('.panel').length);
 
 // --- the page's buttons actually post --------------------------------------
 
@@ -1585,7 +1588,7 @@ check('every NUI message the client sends is handled by the page',
 check('the manifest loads justice after the core',
   /server_scripts\s*\{[^}]*'server\/main\.lua'[^}]*'server\/justice\.lua'[^}]*\}/s
     .test(sources['fxmanifest.lua']), sources['fxmanifest.lua']);
-check('the manifest ships version 0.3.0', /version '0\.3\.0'/.test(sources['fxmanifest.lua']),
+check('the manifest ships version 0.4.0', /version '0\.4\.0'/.test(sources['fxmanifest.lua']),
   (sources['fxmanifest.lua'].match(/version '[^']+'/) || [])[0]);
 check('the manifest still points at the single NUI page',
   /ui_page 'html\/index\.html'/.test(sources['fxmanifest.lua']));
@@ -1633,6 +1636,343 @@ check('the MDT page posts to the real resource name, never to localhost',
   appJs.includes('GetParentResourceName') && !/localhost|127\.0\.0\.1/.test(appJs));
 check('the MDT page is transparent (no backdrop-filter black box in CEF)',
   !/backdrop-filter\s*:/.test(cssSrc) && cssSrc.includes('background: transparent'));
+// ---------------------------------------------------------------------------
+// 0.4.0: the lab, bail and court dates, the hotlist and the speed cameras
+// ---------------------------------------------------------------------------
+
+// --- forensics -------------------------------------------------------------
+
+const labHost = dutied();
+
+labHost.callExport('StartStop', [1, 'MARCUS1', 'sultan']);
+
+const xpBeforeLab = (exp(labHost, 'GetStatus', [1]) || {}).xp || 0;
+const sample = exp(labHost, 'SubmitForensics', [1, 'dna']);
+
+check('a lab sample is accepted for the stopped suspect',
+  sample.ok === true && sample.kind === 'dna' && sample.person === 'Marcus Vance', sample);
+check('the lab says how long it needs', typeof sample.readyIn === 'number' && sample.readyIn > 0, sample.readyIn);
+check('submitting a sample earns XP',
+  ((exp(labHost, 'GetStatus', [1]) || {}).xp || 0) === xpBeforeLab + 10,
+  [(exp(labHost, 'GetStatus', [1]) || {}).xp, xpBeforeLab]);
+
+const pending = exp(labHost, 'ListForensics', [{}]) || [];
+check('the sample starts pending in the lab',
+  pending.length === 1 && pending[0].status === 'pending' && !pending[0].result, pending[0]);
+check('the lab does not answer before its time',
+  exp(labHost, 'SettleForensics', []) === 0,
+  exp(labHost, 'SettleForensics', []));
+
+labHost.advance(120);
+
+check('the lab answers once the time is up', exp(labHost, 'SettleForensics', []) === 1);
+
+const finished = (exp(labHost, 'ListForensics', [{}]) || [])[0] || {};
+check('a finished sample carries a result',
+  finished.status === 'done' && !!finished.result && typeof finished.result.detail === 'string',
+  finished);
+check('a lab result has a confidence between 70 and 99',
+  finished.result && finished.result.confidence >= 70 && finished.result.confidence <= 99,
+  finished.result);
+check('the officer is told when the lab answers',
+  labHost.notes().some((note) => /Lab result/.test(note)), labHost.notes());
+check('the lab result reaches the page',
+  !!labHost.lastClient('fk_police:client:lab'), labHost.captured.client.map((event) => event.name));
+check('an unknown lab kind is refused',
+  (exp(labHost, 'SubmitForensics', [1, 'astrology']) || {}).reason === 'unknown_kind',
+  exp(labHost, 'SubmitForensics', [1, 'astrology']));
+check('a sample with nobody to sample is refused',
+  (exp(dutied(), 'SubmitForensics', [1, 'dna']) || {}).reason === 'no_subject',
+  exp(dutied(), 'SubmitForensics', [1, 'dna']));
+
+// --- bail and court dates --------------------------------------------------
+
+const bailHost = dutied();
+
+bailHost.callExport('StartStop', [1, 'ELLIS3', 'buffalo']);
+bailHost.callExport('Arrest', [1, ['assault']]);
+exp(bailHost, 'BookSuspect', [1]);
+
+const quote = exp(bailHost, 'BailQuote', [1]);
+check('bail is a flat sum plus a rate per minute',
+  quote.ok === true && quote.amount === 250 + 2 * 40 && quote.courtDays === 14, quote);
+check('bail is refused when nobody is in custody',
+  (exp(dutied(), 'BailQuote', [1]) || {}).ok === false);
+
+const shortBail = exp(bailHost, 'PostBail', [1, 10]);
+check('under-paying the bail is refused',
+  shortBail.ok === false && shortBail.reason === 'short_payment' && shortBail.due === quote.amount, shortBail);
+
+const bailClock = bailHost.clock();
+const bailPosted = exp(bailHost, 'PostBail', [1, quote.amount, 'paid at the desk']);
+check('posting bail releases the suspect and sets a date',
+  bailPosted.ok === true && bailPosted.person === 'Ellis Roan' && bailPosted.courtDays === 14, bailPosted);
+check('the court date is two weeks out',
+  bailPosted.courtAt - bailClock === 14 * 86400, bailPosted.courtAt - bailClock);
+check('custody is empty once bail is posted',
+  (exp(bailHost, 'Custody', [1]) || {}).active === false,
+  exp(bailHost, 'Custody', [1]));
+check('the docket lists the date as posted',
+  ((exp(bailHost, 'ListBails', [{}]) || [])[0] || {}).status === 'posted',
+  exp(bailHost, 'ListBails', [{}]));
+
+bailHost.advance(15 * 86400);
+
+check('a date that has passed is heard by the court', exp(bailHost, 'SweepCourtDates', []) === 1);
+
+const heard = (exp(bailHost, 'ListBails', [{}]) || [])[0] || {};
+check('the court either rules or issues a warrant',
+  ['heard', 'failed'].includes(heard.status), heard);
+check('a missed date leaves a warrant behind',
+  heard.status !== 'failed' || !!heard.warrant, heard);
+check('an attended date produces a verdict',
+  heard.status !== 'heard' || ['guilty', 'acquitted'].includes(heard.outcome), heard);
+
+// --- hotlist and ANPR ------------------------------------------------------
+
+const hotHost = dutied();
+
+const flagged = exp(hotHost, 'AddHotlist', [1, 'marcus 1', 120, 'used in a robbery']);
+check('a plate can be flagged as stolen',
+  flagged.ok === true && flagged.plate === 'MARCUS1', flagged);
+check('the flagged plate is on the hotlist',
+  (exp(hotHost, 'ListHotlist', []) || []).some((entry) => entry.plate === 'MARCUS1'),
+  exp(hotHost, 'ListHotlist', []));
+check('the same plate is not flagged twice',
+  (exp(hotHost, 'AddHotlist', [1, 'MARCUS1']) || {}).reason === 'already_hot',
+  exp(hotHost, 'AddHotlist', [1, 'MARCUS1']));
+
+hotHost.fireNet('fk_police:server:anpr', 1, ['MARCUS1']);
+const hotRead = (hotHost.lastClient('fk_police:client:anpr') || {}).args || {};
+check('the ANPR reports a hotlisted plate as stolen',
+  hotRead.stolen === true && !!hotRead.hotlist && hotRead.hotlist.plate === 'MARCUS1', hotRead);
+
+check('a recovered car comes off the hotlist',
+  (exp(hotHost, 'ClearHotlist', [1, 'MARCUS1']) || {}).ok === true,
+  exp(hotHost, 'ClearHotlist', [1, 'MARCUS1']));
+check('the hotlist is empty after a recovery',
+  (exp(hotHost, 'ListHotlist', []) || []).length === 0,
+  exp(hotHost, 'ListHotlist', []));
+
+hotHost.fireNet('fk_police:server:anpr', 1, ['MARCUS1']);
+check('a recovered plate no longer reads as stolen',
+  !(((hotHost.lastClient('fk_police:client:anpr') || {}).args || {}).hotlist),
+  (hotHost.lastClient('fk_police:client:anpr') || {}).args);
+
+const hotVehicle = (host, plate) => (((exp(host, 'Search', [1, 'vehicle', plate]) || {}).results || [])[0] || {});
+
+const maskHost = dutied();
+exp(maskHost, 'AddHotlist', [1, 'MARCUS1', 60, 'carjacking']);
+check('flagging a clean car makes the lookup call it stolen',
+  hotVehicle(maskHost, 'MARCUS1').stolen === true, hotVehicle(maskHost, 'MARCUS1'));
+check('the clean car was clean before the flag',
+  (() => {
+    const probe = dutied();
+    return hotVehicle(probe, 'MARCUS1').stolen === false;
+  })());
+exp(maskHost, 'ClearHotlist', [1, 'MARCUS1']);
+check('recovering a flag-marked car clears the stolen marker',
+  hotVehicle(maskHost, 'MARCUS1').stolen === false, hotVehicle(maskHost, 'MARCUS1'));
+
+exp(maskHost, 'AddHotlist', [1, 'OWEN555', 60, 'already stolen']);
+exp(maskHost, 'ClearHotlist', [1, 'OWEN555']);
+check('a car the records already called stolen stays stolen after a recovery',
+  hotVehicle(maskHost, 'OWEN555').stolen === true, hotVehicle(maskHost, 'OWEN555'));
+
+// --- speed cameras ---------------------------------------------------------
+
+const camHost = dutied();
+const legion = { x: 215.0, y: -810.0, z: 30.7 };
+
+const slow = exp(camHost, 'CheckCamera', [1, { x: legion.x, y: legion.y, z: legion.z, speed: 10.0, plate: 'MARCUS1' }]);
+check('a camera reads a car under the limit without a ticket',
+  slow.ok === true && slow.ticketed === false && slow.camera === 'cam_legion', slow);
+
+const fast = exp(camHost, 'CheckCamera', [1, { x: legion.x, y: legion.y, z: legion.z, speed: 20.0, plate: 'MARCUS1' }]);
+check('a camera tickets a car over the limit',
+  fast.ok === true && fast.ticketed === true && fast.kmh === 72, fast);
+check('the camera ticket lands on the fine ledger',
+  (exp(camHost, 'ListFines', [{}]) || []).some((fine) => fine.camera === 'cam_legion'),
+  exp(camHost, 'ListFines', [{}]));
+check('the camera bills the registered keeper',
+  fast.person === 'Marcus Vance' && fast.amount === 250, fast);
+check('a second pass inside the cooldown is not ticketed again',
+  (exp(camHost, 'CheckCamera', [1, { x: legion.x, y: legion.y, z: legion.z, speed: 22.0, plate: 'MARCUS1' }]) || {}).ticketed === false,
+  exp(camHost, 'CheckCamera', [1, { x: legion.x, y: legion.y, z: legion.z, speed: 22.0, plate: 'MARCUS1' }]));
+check('the officer is told about the camera ticket',
+  camHost.notes().some((note) => /Speed camera/.test(note)), camHost.notes());
+check('the camera result reaches the client',
+  !!camHost.lastClient('fk_police:client:camera'),
+  camHost.captured.client.map((event) => event.name));
+check('a position away from any camera is ignored',
+  (exp(camHost, 'CheckCamera', [1, { x: 0, y: 0, z: 0, speed: 40, plate: 'MARCUS1' }]) || {}).reason === 'no_camera',
+  exp(camHost, 'CheckCamera', [1, { x: 0, y: 0, z: 0, speed: 40, plate: 'MARCUS1' }]));
+check('the configured cameras are all listed',
+  (exp(camHost, 'ListCameras', []) || []).length >= 4, (exp(camHost, 'ListCameras', []) || []).length);
+
+// --- dispatch flags cars by itself, and old flags fall off -----------------
+
+const autoHost = dutied();
+check('dispatch has not flagged anything at the start',
+  (exp(autoHost, 'ListHotlist', []) || []).length === 0,
+  exp(autoHost, 'ListHotlist', []));
+
+autoHost.advance(21 * 60);
+autoHost.step();
+
+const autoList = exp(autoHost, 'ListHotlist', []) || [];
+check('dispatch flags a stolen car on its own',
+  autoList.some((entry) => entry.auto === true && entry.addedBy === 'dispatch'), autoList);
+check('an automatic flag names a real plate', autoList.length > 0 && /^[A-Z0-9]+$/.test(autoList[0].plate), autoList[0]);
+
+const expiryHost = dutied();
+exp(expiryHost, 'AddHotlist', [1, 'ELLIS3', 1, 'test flag']);
+check('a short flag is on the list while it lasts',
+  (exp(expiryHost, 'ListHotlist', []) || []).length === 1);
+expiryHost.advance(120);
+check('an expired flag falls off the hotlist',
+  (exp(expiryHost, 'ListHotlist', []) || []).length === 0,
+  exp(expiryHost, 'ListHotlist', []));
+
+// --- chat commands ---------------------------------------------------------
+
+const cmdHost = dutied();
+
+cmdHost.callExport('StartStop', [1, 'ELLIS3', 'buffalo']);
+cmdHost.runCommand('lab', 1, ['prints']);
+check('the /lab command takes a sample',
+  cmdHost.notes().some((note) => /Sample LAB-/.test(note)), cmdHost.notes());
+
+cmdHost.runCommand('lab', 1, []);
+check('the /lab command lists the lab',
+  cmdHost.notes().some((note) => /Fingerprints/.test(note) && /at the lab|No profile|Latent/.test(note)),
+  cmdHost.notes());
+
+cmdHost.callExport('Arrest', [1, ['assault']]);
+exp(cmdHost, 'BookSuspect', [1]);
+
+cmdHost.runCommand('bail', 1, []);
+check('the /bail command quotes the court figure',
+  cmdHost.notes().some((note) => /Bail for Ellis Roan is \$330/.test(note)), cmdHost.notes());
+
+cmdHost.runCommand('bail', 1, ['330']);
+check('the /bail command posts the bail',
+  cmdHost.notes().some((note) => /out on \$330 bail/.test(note)), cmdHost.notes());
+
+cmdHost.runCommand('court', 1, []);
+check('the /court command lists the docket',
+  cmdHost.notes().some((note) => /court date/.test(note)), cmdHost.notes());
+
+cmdHost.runCommand('hotlist', 1, ['add', 'OWEN555', '60', 'armed robbery']);
+check('the /hotlist command flags a plate',
+  cmdHost.notes().some((note) => /OWEN555 flagged as stolen/.test(note)), cmdHost.notes());
+
+cmdHost.runCommand('hotlist', 1, []);
+check('the /hotlist command lists the hotlist',
+  cmdHost.notes().some((note) => /stolen plate\(s\) on the hotlist/.test(note)), cmdHost.notes());
+
+cmdHost.runCommand('hotlist', 1, ['remove', 'OWEN555']);
+check('the /hotlist command clears a plate',
+  cmdHost.notes().some((note) => /OWEN555 recovered/.test(note)), cmdHost.notes());
+
+cmdHost.runCommand('cameras', 1, []);
+check('the /cameras command lists the posts',
+  cmdHost.notes().some((note) => /speed cameras:/.test(note)), cmdHost.notes());
+
+// --- contested fines -------------------------------------------------------
+
+const contestHost = dutied();
+
+contestHost.callExport('StartStop', [1, 'MARCUS1', 'sultan']);
+exp(contestHost, 'Cite', [1, ['speeding']]);
+
+const contestFineId = ((exp(contestHost, 'ListFines', [{}]) || [])[0] || {}).id;
+const contestFiled = exp(contestHost, 'ContestFine', [1, contestFineId]);
+
+check('a ticket can be contested with a hearing date',
+  contestFiled.ok === true && contestFiled.fine === contestFineId && contestFiled.days === 3, contestFiled);
+check('the fine shows the open contest',
+  ((exp(contestHost, 'ListFines', [{}]) || [])[0] || {}).contest === 'scheduled',
+  (exp(contestHost, 'ListFines', [{}]) || [])[0]);
+check('the same ticket is not contested twice',
+  (exp(contestHost, 'ContestFine', [1, contestFineId]) || {}).reason === 'already_contested',
+  exp(contestHost, 'ContestFine', [1, contestFineId]));
+check('an unknown ticket cannot be contested',
+  (exp(contestHost, 'ContestFine', [1, 'FINE-NOPE']) || {}).reason === 'unknown_fine',
+  exp(contestHost, 'ContestFine', [1, 'FINE-NOPE']));
+
+contestHost.advance(4 * 86400);
+
+check('the hearing is heard when the date arrives', exp(contestHost, 'SweepContests', []) === 1,
+  exp(contestHost, 'SweepContests', []));
+
+const heardContest = (exp(contestHost, 'ListContests', [{}]) || [])[0] || {};
+check('a hearing either upholds or strikes the fine',
+  ['upheld', 'struck'].includes(heardContest.status), heardContest);
+check('a struck fine is waived on the ledger',
+  heardContest.status !== 'struck'
+    || ((exp(contestHost, 'ListFines', [{}]) || [])[0] || {}).status === 'waived',
+  [heardContest.status, (exp(contestHost, 'ListFines', [{}]) || [])[0]]);
+check('the officer is told the ticket was filed for a hearing',
+  contestHost.notes().some((note) => /is contesting/.test(note)), contestHost.notes());
+
+// --- the MDT pages for the new systems -------------------------------------
+
+dom.window.mdt.renderCourt({
+  bail: { ok: true, person: 'Ellis Roan', amount: 330, seconds: 120, courtDays: 14 },
+  bails: [{ id: 'BAIL-1', person: 'Ellis Roan', amount: 330, status: 'posted', daysLeft: 14, courtAt: 1761209600 }],
+});
+check('the MDT shows the bail figure and the docket',
+  /Ellis Roan/.test(text('bail-hint')) && /330/.test(text('bail-hint')) && /BAIL-1/.test(text('court-list')),
+  [text('bail-hint'), text('court-list')]);
+
+dom.window.mdt.renderLab({
+  kinds: [{ id: 'dna', label: 'DNA swab' }],
+  list: [{ id: 'LAB-1', kind: 'dna', label: 'DNA swab', person: 'Ellis Roan', status: 'done', result: { detail: 'DNA profile matches Ellis Roan', confidence: 91, hit: true } }],
+});
+check('the MDT renders lab results',
+  /DNA profile matches/.test(text('lab-list')) && /HIT/.test(text('lab-list')), text('lab-list'));
+check('the lab picker is filled from the config',
+  dom.window.document.getElementById('lab-kind').options.length === 1,
+  dom.window.document.getElementById('lab-kind').options.length);
+
+dom.window.mdt.renderTraffic({
+  hotlist: [{ id: 'HOT-1', plate: 'OWEN555', reason: 'used in a robbery' }],
+  cameras: [{ id: 'cam_legion', label: 'Legion Square', limitKmh: 50 }],
+  cameraTickets: [{ id: 'CAM-1', cameraLabel: 'Legion Square', speedKmh: 72, limitKmh: 50, amount: 250, issuedAt: 1760000000 }],
+});
+check('the MDT renders the hotlist, the cameras and the camera tickets',
+  /OWEN555/.test(text('hotlist-list')) && /Legion Square/.test(text('camera-list')) && /CAM-1/.test(text('camera-body')),
+  [text('hotlist-list'), text('camera-list'), text('camera-body')]);
+
+posted.length = 0;
+dom.window.document.getElementById('lab-person').value = 'Ellis Roan';
+dom.window.document.getElementById('form-lab').dispatchEvent(new dom.window.Event('submit'));
+check('the lab form posts a sample',
+  posted.some((call) => call.url.endsWith('/labSubmit') && call.body.kind === 'dna' && call.body.person === 'Ellis Roan'),
+  posted);
+
+posted.length = 0;
+const bailButton = dom.window.document.getElementById('bail-post');
+dom.window.document.getElementById('bail-amount').value = '400';
+bailButton.click();
+check('the bail button posts the amount',
+  posted.some((call) => call.url.endsWith('/bailPost') && call.body.amount === 400), posted);
+
+posted.length = 0;
+const hotlistButton = dom.window.document.querySelector('#hotlist-list button');
+if (hotlistButton) hotlistButton.click();
+check('the hotlist button clears a recovered plate',
+  posted.some((call) => call.url.endsWith('/hotlistClear') && call.body.id === 'HOT-1'), posted);
+
+posted.length = 0;
+const contestButton = [...dom.window.document.querySelectorAll('#fines-body button')]
+  .find((button) => button.textContent === 'Contest');
+if (contestButton) contestButton.click();
+check('a fine can be contested from the MDT',
+  !!contestButton && posted.some((call) => call.url.endsWith('/fineContest') && call.body.id === 'FINE-1'),
+  posted);
+
 // ---------------------------------------------------------------------------
 // Report
 // ---------------------------------------------------------------------------

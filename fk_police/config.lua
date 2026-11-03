@@ -262,6 +262,8 @@ Config.Charges = {
     { id = 'burglary', label = 'Burglary', fine = 2200, jail = 240, type = 'felony' },
     { id = 'vandalism', label = 'Vandalism', fine = 600, jail = 0, type = 'misdemeanor' },
     { id = 'illegal_parking', label = 'Illegal parking', fine = 150, jail = 0, type = 'infraction' },
+    { id = 'failure_to_appear', label = 'Failure to appear in court', fine = 1500, jail = 90, type = 'misdemeanor' },
+    { id = 'camera_speeding', label = 'Speeding (camera)', fine = 250, jail = 0, type = 'infraction' },
 }
 
 -- ---------------------------------------------------------------------------
@@ -367,6 +369,103 @@ Config.Justice = {
     -- An acquittal gives the fine back out of the court fund.
     acquitRefund = true,
     maxVerdicts = 250,
+}
+
+-- ---------------------------------------------------------------------------
+-- Bail, court dates and failure to appear
+-- ---------------------------------------------------------------------------
+-- A booking can be resolved three ways: the sentence is served, the officer
+-- releases the suspect, or bail is posted. Bail books a court date; missing it
+-- is the one thing that follows a suspect around afterwards.
+Config.Bail = {
+    enabled = true,
+    -- Bail = base + perMinute * (sentence minutes), capped at max.
+    base = 250,
+    perMinute = 40,
+    max = 8000,
+    -- Bail is posted at the desk and held by the court fund until the date.
+    courtDays = 14,
+    -- Nobody turns up to a court date in a video game, so the roll decides.
+    appearChance = 0.7,
+    -- Missing the date puts a warrant out (and charges the suspect again).
+    warrantOnFail = true,
+    failCharge = 'failure_to_appear',
+    -- Keep this many bail records.
+    history = 200,
+    -- A contested fine gets a hearing this many days later.
+    contestDays = 3,
+    -- Contested cases are close calls: this is the chance the fine is struck out.
+    contestStrikeChance = 0.45,
+    -- Keep this many contests.
+    contestHistory = 200,
+}
+
+-- ---------------------------------------------------------------------------
+-- Forensics lab
+-- ---------------------------------------------------------------------------
+-- Samples go in, answers come back after `labSeconds`. The answer is rolled
+-- from the sample id, so the same sample always comes back the same way.
+Config.Forensics = {
+    max = 300,
+    -- How long the lab takes (seconds of real time).
+    labSeconds = 45,
+    -- XP for submitting a sample.
+    xp = 10,
+    -- Chance a sample matches something useful.
+    hitChance = 0.6,
+    -- Keep at most this many samples per person.
+    maxPerPerson = 20,
+    kinds = {
+        { id = 'dna', label = 'DNA swab', blurb = 'Saliva from the scene' },
+        { id = 'drugs', label = 'Narcotics test', blurb = 'Field kit to the lab' },
+        { id = 'ballistics', label = 'Ballistics trace', blurb = 'Casing recovered' },
+        { id = 'prints', label = 'Fingerprints', blurb = 'Latent prints lifted' },
+    },
+};
+
+-- ---------------------------------------------------------------------------
+-- Stolen vehicle hotlist (what the ANPR compares against)
+-- ---------------------------------------------------------------------------
+-- Dispatch flags plates; the radar's ANPR reads them back. The list is also
+-- topped up automatically while a unit is on duty so patrols have something to
+-- find without staging it by hand.
+Config.Hotlist = {
+    max = 100,
+    -- A flagged plate stays hot this long (minutes).
+    defaultMinutes = 240,
+    -- Dispatch flags a new stolen car this often (minutes).
+    autoMinutes = 20,
+    -- How many cars dispatch will flag on its own before it stops.
+    autoMax = 6,
+    -- Reasons dispatch uses for its own flags.
+    reasons = {
+        'reported stolen from Legion Square',
+        'taken in a carjacking on Vinewood Blvd',
+        'stolen from a driveway in Sandy Shores',
+        'flagged by a plate reader downtown',
+    },
+};
+
+-- ---------------------------------------------------------------------------
+-- Speed cameras
+-- ---------------------------------------------------------------------------
+-- Fixed enforcement points. Drive past one over the limit and the ticket goes
+-- on the ledger by itself: the officer does not have to be running radar.
+Config.Cameras = {
+    enabled = true,
+    -- A camera will not ticket the same plate twice inside this window.
+    cooldownSeconds = 120,
+    -- Cameras only read cars this close to the post.
+    defaultRadius = 32.0,
+    -- Fallback fine if the speeding charge is not in the catalogue.
+    fine = 250,
+    cameras = {
+        { id = 'cam_legion', label = 'Legion Square', limitKmh = 50, coords = { x = 215.0, y = -810.0, z = 30.7 } },
+        { id = 'cam_mission', label = 'Mission Row', limitKmh = 50, coords = { x = 425.1, y = -979.5, z = 30.7 } },
+        { id = 'cam_pier', label = 'Del Perro Pier', limitKmh = 65, coords = { x = -1850.0, y = -1231.0, z = 13.0 } },
+        { id = 'cam_sandy', label = 'Sandy Shores', limitKmh = 80, coords = { x = 1848.0, y = 3690.0, z = 34.0 } },
+        { id = 'cam_paleto', label = 'Paleto Bay', limitKmh = 65, coords = { x = -380.0, y = 6040.0, z = 31.0 } },
+    },
 }
 
 -- Warrants are stored twice on purpose: on the person (so a stop shows them)
@@ -526,6 +625,11 @@ Config.Commands = {
     k9 = 'k9',
     radar = 'radar',
     bodycam = 'bodycam',
+    bail = 'bail',
+    court = 'court',
+    lab = 'lab',
+    hotlist = 'hotlist',
+    cameras = 'cameras',
 }
 
 -- ---------------------------------------------------------------------------

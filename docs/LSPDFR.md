@@ -39,6 +39,10 @@ descriptions (`lcpdfr.com`, `gta5mods.com`) and the Charges Reborn code list
 | **Booking / jail** | Transport, cells, release | `/jail` books the arrested suspect into the cell for the sentence, with a live custody timer on the HUD; `/jail release` lets them out |
 | **Shifts** | Not in base LSPDFR | Duty starts a shift; the HUD and MDT show length, citations, arrests, callouts and pay; going off duty pays rank salary (prorated) + per-action bonuses and writes a shift record |
 | **Bodycam** | Equipment | **L** toggles it; the HUD shows a REC chip |
+| **Forensics / evidence processing** (Stop The Ped, LSPatrol add evidence kits and lab results) | Collect a sample and get a lab answer later | `/lab dna`, `/lab drugs`, `/lab ballistics`, `/lab prints` (or the MDT **Lab** tab). The server holds the sample for `Config.Forensics.labSeconds`, then rolls the answer from the sample id — the same sample always answers the same way. The result is pushed to chat and the Lab tab |
+| **Court dates & bail** (court mods for LSPDFR) | A suspect can be bailed out and owes the court a date | `/bail` quotes and posts bail, sets a date (`Config.Bail.courtDays`) and the **Court** tab keeps the docket. A missed date is heard by the server: verdict or a failure-to-appear warrant |
+| **Stolen hotlist / ANPR watch list** (LSPatrol, ANPR mods) | A list of plates patrol is looking for | The **Traffic** tab and `/hotlist add <plate> [minutes] [why]`: the ANPR reads a hotlisted plate as stolen (with the dispatch note) and dispatch flags cars on its own every `Config.Hotlist.autoMinutes` |
+| **Speed cameras / red-light cameras** (traffic mods) | Fixed enforcement points that ticket on their own | `Config.Cameras` posts. The client reports position + speed every second on duty; the **server** decides whether a camera saw a speeding car and writes the fine (registered keeper, per-camera cooldown). `/cameras` and the Traffic tab list the posts and the last tickets |
 
 ---
 
@@ -74,9 +78,9 @@ also how they are tested.
 | --- | --- | --- |
 | Ped AI driven suspects, pursuits, evidence | Callouts are scene + charges + XP; no pursuit AI | RPH can drive the game's AI directly; a resource cannot. The MDT still hands you the charges so the stop still ends in a citation or an arrest |
 | Other officers on patrol (LSPDFR 0.4 ambient units) | Backup units spawn on request | Ambient AI units would need a population manager; on a one-player server they mostly add traffic |
-| Court / verdicts (mods) | Fines and sentences are applied immediately | No court system exists in this project yet; `Config.Charges` keeps `type` (infraction/misdemeanor/felony) so one can be layered on later |
-| K9 / partner menus | K9 arrives as a backup unit | Partner AI needs a follow system; the backup unit is the LSPDFR-shaped version of it |
-| Roadblocks, spike strips | Not implemented | Would need client-side prop placement with server validation; the backup delay/count config is the hook for it |
+| Court / verdicts (mods) | Every booking is ruled on when the suspect leaves custody, and a bailed suspect gets a real court date | The verdict is rolled on the server from the booking id, so it is stable and cannot be re-rolled from the client; a missed date turns into a warrant |
+| K9 / partner menus | `/k9` works the stopped car; K9 also arrives as a backup unit | Partner AI needs a follow system, which is not what LSPDFR's K9 menu is for; the dog's search is deterministic per plate |
+| Roadblocks, spike strips | `/spikes` lays a two-minute stinger and `/roadblock` requests a roadblock | Props are placed client-side per request, with the server validating who asked and how far away they were (see `Config.Field.spikes`) |
 
 ---
 
@@ -95,7 +99,12 @@ rather than copied:
 | **Court verdicts** | LSPDFR never decides the case. Here every booking is ruled on when the suspect leaves custody: guilty keeps the fine, an acquittal waives it and pays it back out of the court fund (`/verdict`) |
 | **Evidence locker** | Frisks and charge sheets become exhibits with quantities and an officer (`/evidence`), so the file outlives the stop |
 | **Callsigns & medals** | `/callsign 3-ADAM-9` names you on the radio, the HUD and the MDT; `Config.Medals` awards medals at XP thresholds |
-| **Persistence** | Records, fines, warrants, reports and shifts all survive a restart (`.bak` + snapshots) |
+| **Forensics lab** | A case is only closed when a result comes back: samples answer on a timer, deterministically, with a confidence figure |
+| **Bail and court dates** | Bail is a second exit from custody, and missing the date is what turns a suspect into a warrant — the loop the fine ledger starts, finished |
+| **Stolen hotlist** | Dispatch flags plates by itself, so the ANPR has something to find on an empty server |
+| **Speed cameras** | Enforcement that does not need the officer to be running radar, and a reason to drive carefully on duty |
+| **Contested fines** | A ticket is not the end of it: the citizen can contest it, and the hearing either upholds the fine or strikes it out with a refund |
+| **Persistence** | Records, fines, warrants, reports, bails, hotlist and shifts all survive a restart (`.bak` + snapshots) |
 
 ## 4. What stays server-authoritative
 
@@ -117,6 +126,12 @@ Everything that touches money, records or XP lives in `fk_police/server/main.lua
 | `impound` | Needs a live stop, one open impound per plate; the release fee is taken through `fk_economy:RemoveMoney` and only if the bank can cover it. The car is deleted client-side only when the plate matches and it is within 60 m |
 | `pursuit` | Needs a stop or an accepted callout; the outcome must be one of `Config.Pursuit.outcomes` |
 | `callout:resolve` | The callout must be `accepted` **and** the client must report coords within `Config.Dispatch.sceneRadius` (12 m) of the scene |
+| `lab` | The kind must be one of `Config.Forensics.kinds`; the subject is the stopped/arrested person or a named record; the wait and the answer are decided here (`Mdt.sampleResult`, deterministic) |
+| `bail` | The figure comes from `Mdt.bailAmount`; an under-payment is refused; only an on-duty officer with someone in custody can post it; the court date is `epoch + courtDays` |
+| court dates | Heard by the server sweep (or `/court attend`); the verdict is `Mdt.verdict`, and a no-show writes the failure-to-appear warrant itself |
+| `hotlist` | Plates are normalised and deduplicated, flags expire, and only the server marks a vehicle stolen |
+| cameras | The camera list, radius, limit, cooldown and fine are all server-side; the client only reports where it is and how fast it is going, and the ticket is written to the fine ledger regardless of what the client says about it |
+| contested fines | One open contest per fine, only for unpaid tickets; the hearing date and the uphold/strike roll are decided on the server (`Mdt.hash01`), and a refund can never exceed what was actually paid |
 | money | Only through `exports['fk_economy']:AddMoney(source, 'bank', n, reason)` |
 | records | `data/records.json`, written by `Persist` (`.bak` fallback, same as the other resources) |
 
@@ -133,6 +148,8 @@ comes back. It has no copy of the charges, the prices or the records.
 * rate limits are skipped — there is no one to flood the server but yourself;
 * `maxActive = 1` callouts, owned by the only officer;
 * the MDT opens without a "who is asking" handshake, because the answer is always you;
+* the lab, the court docket and the camera tickets are all settled on one 5-second
+  server timer — there is no other officer to run them;
 * the records, the officer table and the callouts all live in one process, so no
   cross-player locks or queues exist;
 * the court sweep runs when *you* go on duty (there is no other officer to run it);

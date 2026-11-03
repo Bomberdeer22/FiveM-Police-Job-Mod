@@ -354,6 +354,16 @@
         const waive = el('button', 'small ghost', 'Waive');
         waive.addEventListener('click', () => post('fineWaive', { id: fine.id }));
         actions.append(collect, waive);
+
+        if (!fine.contest) {
+          const contest = el('button', 'small ghost', 'Contest');
+          contest.addEventListener('click', () => post('fineContest', { id: fine.id }));
+          actions.appendChild(contest);
+        } else {
+          actions.appendChild(el('span', 'flag', `contested: ${fine.contest}`));
+        }
+      } else if (fine.contest) {
+        actions.appendChild(el('span', 'flag', `contested: ${fine.contest}`));
       }
 
       row.appendChild(actions);
@@ -510,6 +520,146 @@
     });
   }
 
+  function renderLab(lab) {
+    const list = byId('lab-list');
+    const select = byId('lab-kind');
+
+    if (!list) return;
+
+    const kinds = (lab && lab.kinds) || [];
+
+    if (select && select.options.length !== kinds.length) {
+      select.innerHTML = '';
+
+      kinds.forEach((kind) => {
+        const option = el('option', null, kind.label || kind.id);
+        option.value = kind.id;
+        select.appendChild(option);
+      });
+    }
+
+    list.innerHTML = '';
+
+    const samples = (lab && lab.list) || [];
+
+    if (samples.length === 0) {
+      list.appendChild(el('p', 'hint', 'No samples in the lab.'));
+      return;
+    }
+
+    samples.forEach((sample) => {
+      const card = el('div', 'card');
+      card.appendChild(el('h2', null, `${sample.label || sample.kind} — ${sample.person || 'unknown'}`));
+      card.appendChild(el('p', null, `${sample.id} · ${sample.status === 'pending' ? 'at the lab' : 'result in'}`));
+
+      if (sample.result) {
+        card.appendChild(el('p', null, `${sample.result.detail} (${sample.result.confidence}% confidence)`));
+        if (sample.result.hit) card.appendChild(el('span', 'flag bad', 'HIT'));
+      } else {
+        card.appendChild(el('p', null, `Expected back ${date(sample.readyAt)}`));
+      }
+
+      list.appendChild(card);
+    });
+  }
+
+  function renderCourt(bundle) {
+    const hint = byId('bail-hint');
+    const list = byId('court-list');
+
+    if (!list) return;
+
+    const quote = bundle && bundle.bail;
+
+    if (hint) {
+      hint.textContent = quote && quote.ok
+        ? `${quote.person} in custody: bail is ${money(quote.amount)} (${duration(quote.seconds)} sentence, date in ${quote.courtDays} days).`
+        : 'Nobody is in custody.';
+    }
+
+    list.innerHTML = '';
+
+    const bails = (bundle && bundle.bails) || [];
+
+    if (bails.length === 0) {
+      list.appendChild(el('p', 'hint', 'No court dates on the docket.'));
+      return;
+    }
+
+    bails.forEach((bail) => {
+      const card = el('div', 'card');
+      card.appendChild(el('h2', null, `${bail.person || 'unknown'} — ${bail.id}`));
+      card.appendChild(el('p', null, `${money(bail.amount)} · ${bail.status}${bail.outcome ? ` (${bail.outcome})` : ''}`));
+
+      if (bail.status === 'posted') {
+        card.appendChild(el('p', null, `Court in ${bail.daysLeft} day(s) — ${date(bail.courtAt)}`));
+        const row = el('div', 'row');
+        const hear = el('button', 'small', 'Hear the case now');
+        hear.addEventListener('click', () => post('courtAttend', { id: bail.id }));
+        row.appendChild(hear);
+        card.appendChild(row);
+      } else if (bail.warrant) {
+        card.appendChild(el('span', 'flag bad', `WARRANT ${bail.warrant}`));
+      }
+
+      list.appendChild(card);
+    });
+  }
+
+  function renderTraffic(bundle) {
+    const hotlist = byId('hotlist-list');
+    const cameras = byId('camera-list');
+    const body = byId('camera-body');
+
+    if (hotlist) {
+      hotlist.innerHTML = '';
+
+      const entries = (bundle && bundle.hotlist) || [];
+
+      if (entries.length === 0) {
+        hotlist.appendChild(el('p', 'hint', 'Nothing on the hotlist.'));
+      } else {
+        entries.forEach((entry) => {
+          const card = el('div', 'card');
+          card.appendChild(el('h2', null, `${entry.plate} — stolen`));
+          card.appendChild(el('p', null, `${entry.reason || 'reported stolen'} · ${entry.id}`));
+
+          const row = el('div', 'row');
+          const clear = el('button', 'small', 'Recovered');
+          clear.addEventListener('click', () => post('hotlistClear', { id: entry.id, plate: entry.plate }));
+          row.appendChild(clear);
+          card.appendChild(row);
+          hotlist.appendChild(card);
+        });
+      }
+    }
+
+    if (cameras) {
+      cameras.innerHTML = '';
+
+      ((bundle && bundle.cameras) || []).forEach((camera) => {
+        const card = el('div', 'card');
+        card.appendChild(el('h2', null, camera.label || camera.id));
+        card.appendChild(el('p', null, `${camera.limitKmh} km/h limit · ${camera.id}`));
+        cameras.appendChild(card);
+      });
+    }
+
+    if (body) {
+      body.innerHTML = '';
+
+      ((bundle && bundle.cameraTickets) || []).forEach((fine) => {
+        const row = el('tr');
+        row.appendChild(el('td', null, fine.id));
+        row.appendChild(el('td', null, fine.cameraLabel || fine.camera || '—'));
+        row.appendChild(el('td', null, `${fine.speedKmh || 0}/${fine.limitKmh || 0} km/h`));
+        row.appendChild(el('td', null, money(fine.amount)));
+        row.appendChild(el('td', null, fine.issuedAt ? new Date(Number(fine.issuedAt) * 1000).toISOString().slice(0, 16).replace('T', ' ') : '—'));
+        body.appendChild(row);
+      });
+    }
+  }
+
   function renderBundle(bundle) {
     if (!bundle) return;
 
@@ -530,6 +680,9 @@
     renderMedals(bundle.status && bundle.status.medals);
     renderVerdicts(bundle.verdicts);
     renderEvidence(bundle.evidence);
+    renderLab(bundle.lab);
+    renderCourt(bundle);
+    renderTraffic(bundle);
 
     if (bundle.department) {
       byId('fund').textContent = `${bundle.department.label || 'Court fund'} ${money(bundle.department.balance)}`;
@@ -697,6 +850,29 @@
     document.querySelectorAll('#report-charges input:checked').forEach((box) => { box.checked = false; });
   });
 
+  byId('form-lab').addEventListener('submit', (event) => {
+    event.preventDefault();
+    post('labSubmit', { kind: byId('lab-kind').value, person: byId('lab-person').value });
+    byId('lab-person').value = '';
+  });
+
+  byId('bail-post').addEventListener('click', () => {
+    const amount = byId('bail-amount').value;
+    post('bailPost', { amount: amount === '' ? null : Number(amount) });
+    byId('bail-amount').value = '';
+  });
+
+  byId('form-hotlist').addEventListener('submit', (event) => {
+    event.preventDefault();
+    post('hotlistAdd', {
+      plate: byId('hotlist-plate').value,
+      minutes: Number(byId('hotlist-minutes').value) || 240,
+      reason: byId('hotlist-reason').value,
+    });
+    byId('hotlist-plate').value = '';
+    byId('hotlist-reason').value = '';
+  });
+
   window.addEventListener('message', (event) => {
     const data = event.data || {};
 
@@ -718,6 +894,12 @@
       case 'reportDraft':
         showTab('reports');
         if (byId('report-title')) byId('report-title').value = data.title || '';
+        return undefined;
+      case 'labResult':
+        post('refresh', {});
+        return undefined;
+      case 'camera':
+        post('refresh', {});
         return undefined;
       case 'field': {
         if (!state.open) return undefined;
@@ -741,6 +923,9 @@
     renderStatus,
     renderCalls,
     renderCharges,
+    renderLab,
+    renderCourt,
+    renderTraffic,
     renderBundle,
     renderHud,
     state,

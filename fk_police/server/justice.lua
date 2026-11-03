@@ -326,6 +326,12 @@ local function listFines(filter)
                 dueAt = fine.dueAt,
                 overdue = Mdt.isOverdue(fine, nowSeconds),
                 citation = fine.citation,
+                contest = fine.contest,
+                camera = fine.camera,
+                cameraLabel = fine.cameraLabel,
+                speedKmh = fine.speedKmh,
+                limitKmh = fine.limitKmh,
+                source = fine.source,
             }
         end
     end
@@ -1717,6 +1723,1161 @@ RegisterNetEvent('fk_police:server:field', function(tool, name)
 end)
 
 -- ---------------------------------------------------------------------------
+-- Forensics lab
+-- ---------------------------------------------------------------------------
+-- A sample goes in, the lab answers later. Nothing about the answer is decided
+-- by the client: the kind, the wait and the roll all live here.
+
+--- The live source still connected as this identifier, if any.
+--- @return number|nil
+local function sourceForIdentifier(identifier)
+    if not identifier then return nil end
+
+    for source, entry in pairs(P.officers or {}) do
+        if entry.identifier == identifier then return source end
+    end
+
+    return nil
+end
+
+--- Samples, newest first, optionally for one person.
+--- @return table
+local function forensicsFor(filter)
+    local options = type(filter) == 'table' and filter or {}
+    local person = Mdt.normalizeName(options.person)
+    local store = records()
+    local out = {}
+
+    for index = #(store.forensics or {}), 1, -1 do
+        local sample = store.forensics[index]
+
+        if not person or (Mdt.normalizeName(sample.person) or ''):lower() == person:lower() then
+            out[#out + 1] = sample
+        end
+
+        if #out >= 50 then break end
+    end
+
+    return out
+end
+
+--- Close every sample whose lab time is up. Idempotent - safe on a timer.
+--- @return number completed
+local function settleForensics(nowSeconds)
+    local store = records()
+    local now = tonumber(nowSeconds) or epoch()
+    local completed = 0
+
+    for _, sample in ipairs(store.forensics or {}) do
+        if sample.status == 'pending' and (tonumber(sample.readyAt) or 0) <= now then
+            sample.status = 'done'
+            sample.result = Mdt.sampleResult(config(), sample.id, sample.kind, sample.person)
+            sample.completedAt = now
+            completed = completed + 1
+
+            local source = sourceForIdentifier(sample.officer)
+
+            if source then
+                notify(source, ('Lab result for %s (%s): %s.'):format(tostring(sample.person), tostring(sample.label),
+                    tostring(sample.result.detail)))
+                TriggerClientEvent('fk_police:client:lab', source, sample)
+            end
+        end
+    end
+
+    if completed > 0 then P.save() end
+
+    return completed
+end
+
+--- Submit a sample. The suspect defaults to whoever is stopped.
+--- @return table result
+local function submitForensics(source, kindId, name)
+    local entry, reason = onDuty(source)
+
+    if not entry then return { ok = false, reason = reason } end
+
+    local rules = config().Forensics or {}
+    local kind = Mdt.forensicsKind(config(), kindId)
+
+    if not kind then return { ok = false, reason = 'unknown_kind' } end
+
+    local person, wanted = subjectFor(source, name)
+    local stop = P.stopFor(source)
+    local plate = person and person.plate or (stop and stop.plate) or nil
+
+    if not wanted then return { ok = false, reason = 'no_subject' } end
+
+    local store = records()
+    local sample = {
+        id = P.newId('LAB'),
+        kind = kind.id,
+        label = kind.label,
+        person = wanted,
+        plate = plate,
+        status = 'pending',
+        submittedAt = epoch(),
+        readyAt = epoch() + math.max(1, tonumber(rules.labSeconds) or 45),
+        officer = entry.identifier,
+    }
+
+    store.forensics[#store.forensics + 1] = sample
+
+    -- Keep the per-person pile small: drop their oldest sample once over the cap.
+    local cap = tonumber(rules.maxPerPerson) or 20
+    local mine = {}
+
+    for _, candidate in ipairs(store.forensics) do
+        if (Mdt.normalizeName(candidate.person) or ''):lower() == wanted:lower() then mine[#mine + 1] = candidate end
+    end
+
+    while #mine > cap do
+        local drop = table.remove(mine, 1)
+
+        for index = #store.forensics, 1, -1 do
+            if store.forensics[index] == drop then table.remove(store.forensics, index) end
+        end
+    end
+
+    P.trim(store.forensics, tonumber(rules.max) or 300)
+    P.save()
+    P.addXp(source, tonumber(rules.xp) or 10, 'forensic sample')
+
+    return {
+        ok = true,
+        id = sample.id,
+        kind = kind.id,
+        label = kind.label,
+        person = wanted,
+        readyIn = math.max(0, (sample.readyAt or 0) - epoch()),
+        xp = tonumber(rules.xp) or 10,
+    }
+end
+
+exports('SubmitForensics', function(source, kind, name) return submitForensics(source, kind, name) end)
+exports('ListForensics', function(filter) return forensicsFor(filter) end)
+exports('SettleForensics', function(nowSeconds) return settleForensics(nowSeconds) end)
+
+RegisterNetEvent('fk_police:server:lab', function(kind, name)
+    local source = source
+    local result = submitForensics(source, kind, name)
+
+    if not result.ok then
+        local reasons = {
+            no_subject = 'stop a car or name a person first',
+            unknown_kind = 'use dna, drugs, ballistics or prints',
+            off_duty = 'go on duty first',
+            no_identifier = 'go on duty first',
+        }
+
+        return notify(source, ('Lab: %s.'):format(reasons[result.reason] or tostring(result.reason)))
+    end
+
+    notify(source, ('Sample %s (%s) taken from %s - the lab needs %s.'):format(tostring(result.id),
+        tostring(result.label), tostring(result.person), Mdt.formatDuration(result.readyIn)))
+end)
+
+-- ---------------------------------------------------------------------------
+-- Bail and court dates
+-- ---------------------------------------------------------------------------
+-- Bail is the third way out of custody: the suspect pays, walks, and owes the
+-- court a date. Missing the date is what turns this into a warrant.
+
+--- Warrants the court issues to itself (no officer at the keyboard).
+--- @return table|nil warrant
+local function autoWarrant(name, charge, note, days)
+    local store = records()
+    local person = personRecord(name)
+
+    if not person then return nil end
+
+    person.warrants = person.warrants or {}
+    person.warrants[#person.warrants + 1] = { charge = charge, issued = P.isoNow() }
+
+    local warrant = {
+        id = P.newId('WAR'),
+        person = person.name or name,
+        charge = charge,
+        note = Mdt.cleanText(note, 120),
+        issuedAt = epoch(),
+        expiresAt = epoch() + math.max(1, tonumber(days) or 30) * 86400,
+        active = true,
+        officer = 'court',
+        auto = true,
+    }
+
+    store.warrants[#store.warrants + 1] = warrant
+    P.trim(store.warrants, (config().Warrants or {}).max)
+
+    return warrant
+end
+
+--- Bail docket, newest first, with the time left on each date worked out now.
+--- @return table
+local function listBails(filter)
+    local options = type(filter) == 'table' and filter or {}
+    local person = Mdt.normalizeName(options.person)
+    local nowSeconds = epoch()
+    local store = records()
+    local out = {}
+
+    for index = #(store.bails or {}), 1, -1 do
+        local bail = store.bails[index]
+        local matches = true
+
+        if person and (Mdt.normalizeName(bail.person) or ''):lower() ~= person:lower() then matches = false end
+        if options.status and (bail.status or 'posted') ~= options.status then matches = false end
+
+        if matches then
+            out[#out + 1] = {
+                id = bail.id,
+                booking = bail.booking,
+                person = bail.person,
+                plate = bail.plate,
+                amount = bail.amount,
+                status = bail.status or 'posted',
+                outcome = bail.outcome,
+                courtAt = bail.courtAt,
+                daysLeft = math.max(0, math.ceil(((tonumber(bail.courtAt) or nowSeconds) - nowSeconds) / 86400)),
+                postedAt = bail.postedAt,
+                officer = bail.officer,
+                warrant = bail.warrant,
+                refund = bail.refund,
+                note = bail.note,
+            }
+        end
+
+        if #out >= 50 then break end
+    end
+
+    return out
+end
+
+--- The court rules on a bailed suspect who has turned up (or has not).
+--- @return table bail
+local function hearBail(bail, nowSeconds)
+    local rules = config().Bail or {}
+    local justice = config().Justice or {}
+    local store = records()
+    local now = tonumber(nowSeconds) or epoch()
+    local appeared = Mdt.hash01(tostring(bail.id) .. ':appear') < (tonumber(rules.appearChance) or 0.7)
+
+    bail.heardAt = now
+
+    if appeared then
+        local outcome = Mdt.verdict(config(), tostring(bail.booking or bail.id), justice.verdictChance)
+
+        bail.status = 'heard'
+        bail.outcome = outcome
+
+        if outcome == 'acquitted' then
+            -- The court hands the bail back out of the fund.
+            bail.refund = tonumber(bail.amount) or 0
+            store.department.balance = math.max(0, (tonumber(store.department.balance) or 0) - (tonumber(bail.amount) or 0))
+        end
+    else
+        bail.status = 'failed'
+
+        if rules.warrantOnFail ~= false then
+            local warrant = autoWarrant(bail.person, rules.failCharge or 'failure_to_appear',
+                ('missed court date %s'):format(tostring(bail.id)), 30)
+
+            if warrant then bail.warrant = warrant.id end
+        end
+    end
+
+    return bail
+end
+
+--- Walk the docket: any date that has passed is heard. Idempotent.
+--- @return number heard
+local function sweepCourtDates(nowSeconds)
+    local store = records()
+    local now = tonumber(nowSeconds) or epoch()
+    local heard = 0
+
+    for _, bail in ipairs(store.bails or {}) do
+        if (bail.status or 'posted') == 'posted' and (tonumber(bail.courtAt) or math.huge) <= now then
+            hearBail(bail, now)
+            heard = heard + 1
+        end
+    end
+
+    if heard > 0 then P.save() end
+
+    return heard
+end
+
+--- What bail would cost for the suspect in custody right now.
+--- @return table quote
+local function bailQuote(source)
+    local entry = P.officerFor(source, true)
+
+    if not entry or not entry.custody then return { ok = false, reason = 'no_custody' } end
+
+    local rules = config().Bail or {}
+    local amount = Mdt.bailAmount(config(), entry.custody.seconds)
+
+    return {
+        ok = true,
+        booking = entry.custody.id,
+        person = entry.custody.person,
+        seconds = entry.custody.seconds,
+        amount = amount,
+        courtDays = tonumber(rules.courtDays) or 14,
+    }
+end
+
+--- Post bail: the suspect pays, custody ends without a verdict, a date is set.
+--- @return table result
+local function postBail(source, amount, why)
+    local entry, reason = onDuty(source)
+
+    if not entry then return { ok = false, reason = reason } end
+
+    local rules = config().Bail or {}
+
+    if rules.enabled == false then return { ok = false, reason = 'disabled' } end
+
+    local custody = entry.custody
+
+    if not custody then return { ok = false, reason = 'no_custody' } end
+
+    local due = Mdt.bailAmount(config(), custody.seconds)
+    local paid = math.floor(tonumber(amount) or due)
+
+    if paid < due then return { ok = false, reason = 'short_payment', due = due } end
+
+    local store = records()
+    local nowSeconds = epoch()
+    local bail = {
+        id = P.newId('BAIL'),
+        booking = custody.id,
+        person = custody.person,
+        plate = custody.plate,
+        amount = paid,
+        due = due,
+        status = 'posted',
+        postedAt = nowSeconds,
+        courtAt = nowSeconds + math.max(1, tonumber(rules.courtDays) or 14) * 86400,
+        officer = entry.identifier,
+        note = Mdt.cleanText(why, 120),
+    }
+
+    store.bails[#store.bails + 1] = bail
+    P.trim(store.bails, tonumber(rules.history) or 200)
+    store.department.balance = (tonumber(store.department.balance) or 0) + paid
+
+    -- Close the booking without a court verdict: the case is pending a date.
+    for _, booking in ipairs(store.bookings or {}) do
+        if booking.id == custody.id then
+            booking.releasedAt = P.isoNow()
+            booking.releasedBy = entry.identifier
+            booking.releaseReason = 'bail posted'
+            booking.bail = bail.id
+        end
+    end
+
+    entry.custody = nil
+    P.save()
+
+    TriggerClientEvent('fk_police:client:custodyEnded', source, {
+        id = custody.id,
+        person = custody.person,
+        served = 0,
+        verdict = nil,
+        bail = bail.id,
+    })
+
+    return {
+        ok = true,
+        id = bail.id,
+        person = bail.person,
+        amount = paid,
+        courtAt = bail.courtAt,
+        courtDays = math.max(1, tonumber(rules.courtDays) or 14),
+    }
+end
+
+exports('ListBails', function(filter) return listBails(filter) end)
+exports('PostBail', function(source, amount, why) return postBail(source, amount, why) end)
+exports('BailQuote', function(source) return bailQuote(source) end)
+exports('SweepCourtDates', function(nowSeconds) return sweepCourtDates(nowSeconds) end)
+
+RegisterNetEvent('fk_police:server:bail', function(amount, why)
+    local source = source
+    local result = postBail(source, amount, why)
+
+    if not result.ok then
+        local reasons = {
+            no_custody = 'nobody is in custody',
+            short_payment = ('bail is $%d'):format(tonumber(result.due) or 0),
+            off_duty = 'go on duty first',
+            no_identifier = 'go on duty first',
+            disabled = 'bail is turned off in the config',
+        }
+
+        return notify(source, ('Bail: %s.'):format(reasons[result.reason] or tostring(result.reason)))
+    end
+
+    notify(source, ('%s released on $%d bail (%s) - court date in %d days.'):format(tostring(result.person),
+        math.floor(result.amount), tostring(result.id), result.courtDays))
+end)
+
+RegisterNetEvent('fk_police:server:court', function(action, id)
+    local source = source
+    local entry, reason = onDuty(source)
+
+    if not entry then return notify(source, 'Go on duty first.') end
+
+    if action == 'attend' and id then
+        local store = records()
+
+        for _, bail in ipairs(store.bails or {}) do
+            if bail.id == id and (bail.status or 'posted') == 'posted' then
+                hearBail(bail, epoch())
+                P.save()
+
+                return notify(source, ('%s: %s%s.'):format(tostring(bail.person), tostring(bail.status),
+                    bail.outcome and (' (' .. tostring(bail.outcome) .. ')') or ''))
+            end
+        end
+
+        return notify(source, 'No such open court date.')
+    end
+
+    local open = listBails({ status = 'posted' })
+
+    if #open == 0 then return notify(source, 'No court dates on the docket.') end
+
+    for index = 1, math.min(#open, 5) do
+        local bail = open[index]
+
+        notify(source, ('%s - %s, $%d, %d days left.'):format(tostring(bail.id), tostring(bail.person),
+            math.floor(tonumber(bail.amount) or 0), tonumber(bail.daysLeft) or 0))
+    end
+end)
+
+-- ---------------------------------------------------------------------------
+-- Stolen vehicle hotlist
+-- ---------------------------------------------------------------------------
+-- The list the ANPR compares against. Dispatch can flag a plate by itself, and
+-- the officer can add one from a stop.
+
+--- The hotlist, expired entries dropped.
+--- @return table
+local function listHotlist()
+    return Mdt.activeHotlist(records().hotlist, epoch())
+end
+
+--- Flag a plate as stolen.
+--- @return table result
+local function addHotlist(source, plate, minutes, reason, options)
+    local opts = type(options) == 'table' and options or {}
+    local normalized = Mdt.normalizePlate(plate)
+
+    if not normalized then return { ok = false, reason = 'bad_plate' } end
+
+    local rules = config().Hotlist or {}
+    local store = records()
+    local nowSeconds = epoch()
+
+    if Mdt.hotlistEntry(store.hotlist, normalized, nowSeconds) then
+        return { ok = false, reason = 'already_hot' }
+    end
+
+    local entry = {
+        id = P.newId('HOT'),
+        plate = normalized,
+        reason = Mdt.cleanText(reason, 80) or 'reported stolen',
+        minutes = math.max(1, math.floor(tonumber(minutes) or tonumber(rules.defaultMinutes) or 240)),
+        addedAt = nowSeconds,
+        expiresAt = nowSeconds + math.max(1, math.floor(tonumber(minutes) or tonumber(rules.defaultMinutes) or 240)) * 60,
+        addedBy = opts.auto and 'dispatch' or (source and 'officer' or 'console'),
+        officer = opts.officer,
+        auto = opts.auto == true,
+    }
+
+    store.hotlist[#store.hotlist + 1] = entry
+    P.trim(store.hotlist, tonumber(rules.max) or 100)
+
+    local vehicle = Mdt.findVehicle(store, normalized)
+
+    if vehicle then
+        -- Only the flag should be undone on recovery: a car the records already
+        -- called stolen stays stolen.
+        entry.markedStolen = vehicle.stolen ~= true
+        vehicle.stolen = true
+    end
+
+    P.save()
+
+    return { ok = true, id = entry.id, plate = entry.plate, expiresAt = entry.expiresAt, reason = entry.reason }
+end
+
+--- A flag that marked the car stolen puts it back when the flag goes away.
+local function unmaskVehicle(store, entry)
+    if not entry.markedStolen or not entry.plate then return end
+
+    local vehicle = Mdt.findVehicle(store, entry.plate)
+
+    if vehicle then vehicle.stolen = false end
+end
+
+--- Take a plate off the hotlist (recovered, or a mistake).
+--- @return table result
+local function clearHotlist(source, value)
+    local store = records()
+    local wantedPlate = Mdt.normalizePlate(value)
+    local wantedId = tostring(value or '')
+    local removed
+
+    for index = #(store.hotlist or {}), 1, -1 do
+        local entry = store.hotlist[index]
+
+        if entry.id == wantedId or (wantedPlate and entry.plate == wantedPlate) then
+            removed = entry
+            unmaskVehicle(store, entry)
+            table.remove(store.hotlist, index)
+        end
+    end
+
+    if not removed then return { ok = false, reason = 'unknown_plate' } end
+
+    P.save()
+
+    return { ok = true, id = removed.id, plate = removed.plate }
+end
+
+--- Dispatch flags a car on its own, slowly, so patrol has something to find.
+--- @return table|nil entry
+local function autoHotlist(nowSeconds)
+    local rules = config().Hotlist or {}
+    local every = (tonumber(rules.autoMinutes) or 0) * 60
+    local store = records()
+
+    store.hotlistMeta = store.hotlistMeta or { lastAutoAt = nowSeconds }
+
+    if every <= 0 then return nil end
+    if nowSeconds - (tonumber(store.hotlistMeta.lastAutoAt) or nowSeconds) < every then return nil end
+
+    local autoCount = 0
+
+    for _, entry in ipairs(store.hotlist or {}) do
+        if entry.auto then autoCount = autoCount + 1 end
+    end
+
+    if autoCount >= (tonumber(rules.autoMax) or 6) then return nil end
+
+    local keys = {}
+
+    for key in pairs(store.vehicles or {}) do keys[#keys + 1] = key end
+
+    table.sort(keys)
+
+    if #keys == 0 then return nil end
+
+    local start = (tonumber(store.hotlistMeta.cursor) or 0) % #keys
+
+    for offset = 1, #keys do
+        local index = ((start + offset - 1) % #keys) + 1
+        local vehicle = store.vehicles[keys[index]]
+
+        if vehicle and vehicle.plate and not vehicle.stolen
+            and not Mdt.hotlistEntry(store.hotlist, vehicle.plate, nowSeconds) then
+            local reasons = rules.reasons or {}
+            local reason = #reasons > 0 and reasons[(offset % #reasons) + 1] or 'reported stolen'
+            local added = addHotlist(nil, vehicle.plate, rules.defaultMinutes, reason, { auto = true })
+
+            if added.ok then
+                store.hotlistMeta.cursor = index
+                store.hotlistMeta.lastAutoAt = nowSeconds
+                P.save()
+
+                return added
+            end
+        end
+    end
+
+    return nil
+end
+
+--- Drop expired flags. Idempotent.
+--- @return number removed
+local function sweepHotlist(nowSeconds)
+    local store = records()
+    local now = tonumber(nowSeconds) or epoch()
+    local removed = 0
+
+    for index = #(store.hotlist or {}), 1, -1 do
+        local entry = store.hotlist[index]
+
+        if entry.expiresAt and tonumber(entry.expiresAt) <= now then
+            unmaskVehicle(store, entry)
+            table.remove(store.hotlist, index)
+            removed = removed + 1
+        end
+    end
+
+    if removed > 0 then P.save() end
+
+    return removed
+end
+
+exports('ListHotlist', function() return listHotlist() end)
+exports('AddHotlist', function(source, plate, minutes, reason) return addHotlist(source, plate, minutes, reason) end)
+exports('ClearHotlist', function(source, value) return clearHotlist(source, value) end)
+
+RegisterNetEvent('fk_police:server:hotlist', function(action, value, minutes, reason)
+    local source = source
+    local entry, why = onDuty(source)
+
+    if not entry then return notify(source, 'Go on duty first.') end
+
+    if action == 'clear' then
+        local result = clearHotlist(source, value)
+
+        return notify(source, result.ok
+            and ('%s taken off the hotlist.'):format(tostring(result.plate))
+            or 'That plate is not on the hotlist.')
+    end
+
+    local result = addHotlist(source, value, minutes, reason, { officer = entry.identifier })
+
+    if not result.ok then
+        return notify(source, ('Hotlist: %s.'):format(result.reason == 'already_hot' and 'that plate is already hot' or tostring(result.reason)))
+    end
+
+    notify(source, ('%s flagged as stolen until %s.'):format(tostring(result.plate),
+        os.date('!%H:%M', tonumber(result.expiresAt) or epoch())))
+end)
+
+-- ---------------------------------------------------------------------------
+-- Speed cameras
+-- ---------------------------------------------------------------------------
+-- The client sends the patrol car's position and speed every second while it is
+-- on duty. The server decides whether a camera saw a speeding car, and the
+-- ticket lands in the same fine ledger as a roadside citation.
+
+--- The configured cameras (for the MDT and the map).
+--- @return table
+local function cameraList()
+    local rules = config().Cameras or {}
+    local out = {}
+
+    for _, camera in ipairs(rules.cameras or {}) do
+        out[#out + 1] = {
+            id = camera.id,
+            label = camera.label,
+            limitKmh = tonumber(camera.limitKmh) or 0,
+            radius = tonumber(camera.radius) or tonumber(rules.defaultRadius) or 30.0,
+            coords = camera.coords,
+        }
+    end
+
+    return out
+end
+
+--- The last camera tickets, newest first.
+--- @return table
+local function cameraTickets(limit)
+    local out = {}
+
+    for index = #(records().fines or {}), 1, -1 do
+        local fine = records().fines[index]
+
+        if fine.camera then out[#out + 1] = fine end
+
+        if #out >= (tonumber(limit) or 10) then break end
+    end
+
+    return out
+end
+
+--- Check a position/speed against the cameras. Returns what the camera saw;
+--- `ticketed` is true only when a new fine was actually written.
+--- @return table result
+local function checkCamera(source, payload)
+    local entry = P.officerFor(source, true)
+
+    if not entry or not entry.onDuty then return { ok = false, reason = 'off_duty' } end
+
+    local rules = config().Cameras or {}
+
+    if rules.enabled == false then return { ok = false, reason = 'disabled' } end
+    if type(payload) ~= 'table' then return { ok = false, reason = 'bad_payload' } end
+
+    local camera = Mdt.cameraAt(config(), payload.x, payload.y, payload.z)
+
+    if not camera then return { ok = false, reason = 'no_camera' } end
+
+    local over, kmh = Mdt.overLimit(camera, payload.speed)
+
+    if not over then return { ok = true, camera = camera.id, ticketed = false, kmh = math.floor(kmh + 0.5) } end
+
+    local store = records()
+    local plate = Mdt.normalizePlate(payload.plate)
+    local nowSeconds = epoch()
+    local key = ('%s:%s'):format(tostring(camera.id), tostring(plate or 'UNKNOWN'))
+
+    store.cameraCooldowns = store.cameraCooldowns or {}
+
+    if nowSeconds - (tonumber(store.cameraCooldowns[key]) or 0) < (tonumber(rules.cooldownSeconds) or 120) then
+        return { ok = true, camera = camera.id, ticketed = false, kmh = math.floor(kmh + 0.5), reason = 'cooldown' }
+    end
+
+    store.cameraCooldowns[key] = nowSeconds
+
+    -- Keep the cooldown table from growing forever: anything an hour old is dead.
+    local stale = {}
+
+    for other, at in pairs(store.cameraCooldowns) do
+        if nowSeconds - (tonumber(at) or 0) > 3600 then stale[#stale + 1] = other end
+    end
+
+    for _, other in ipairs(stale) do store.cameraCooldowns[other] = nil end
+
+    local charge = Mdt.charge(config(), 'camera_speeding') or Mdt.charge(config(), 'speeding')
+    local amount = charge and tonumber(charge.fine) or tonumber(rules.fine) or 250
+    local vehicle = plate and Mdt.findVehicle(store, plate)
+    local person = vehicle and vehicle.owner or (plate and ('Registered keeper of ' .. plate)) or 'Unknown driver'
+    local fine = {
+        id = P.newId('CAM'),
+        person = person,
+        plate = plate,
+        charges = {
+            { id = charge and charge.id or 'speeding', label = charge and charge.label or 'Speeding', qty = 1 },
+        },
+        amount = amount,
+        paid = 0,
+        status = 'unpaid',
+        issuedAt = nowSeconds,
+        dueAt = nowSeconds + ((config().Justice or {}).paymentDays or 7) * 86400,
+        camera = camera.id,
+        cameraLabel = camera.label,
+        speedKmh = math.floor(kmh + 0.5),
+        limitKmh = tonumber(camera.limitKmh) or 0,
+        source = 'camera',
+        officer = entry.identifier,
+    }
+
+    store.fines[#store.fines + 1] = fine
+    P.trim(store.fines, (config().Justice or {}).maxFines)
+    store.department.balance = tonumber(store.department.balance) or 0
+    P.save()
+
+    notify(source, ('Speed camera %s: %d km/h in a %d zone - ticket %s, $%d.'):format(tostring(camera.label or camera.id),
+        fine.speedKmh, fine.limitKmh, tostring(fine.id), math.floor(amount)))
+
+    TriggerClientEvent('fk_police:client:camera', source, {
+        ok = true,
+        camera = camera.id,
+        label = camera.label,
+        ticketed = true,
+        kmh = fine.speedKmh,
+        limitKmh = fine.limitKmh,
+        fine = fine.id,
+        amount = amount,
+        person = person,
+        plate = plate,
+    })
+
+    return {
+        ok = true,
+        camera = camera.id,
+        label = camera.label,
+        ticketed = true,
+        kmh = fine.speedKmh,
+        limitKmh = fine.limitKmh,
+        fine = fine.id,
+        amount = amount,
+        person = person,
+        plate = plate,
+    }
+end
+
+exports('ListCameras', function() return cameraList() end)
+exports('CheckCamera', function(source, payload) return checkCamera(source, payload) end)
+exports('CameraTickets', function(limit) return cameraTickets(limit) end)
+
+RegisterNetEvent('fk_police:server:camera', function(payload)
+    checkCamera(source, payload)
+end)
+
+-- ---------------------------------------------------------------------------
+-- Contested fines
+-- ---------------------------------------------------------------------------
+-- A citizen can fight a ticket. The hearing is a few days out; the court either
+-- upholds the fine or strikes it out and pays back what was already collected.
+
+--- Contests, newest first, optionally for one person.
+--- @return table
+local function listContests(filter)
+    local options = type(filter) == 'table' and filter or {}
+    local person = Mdt.normalizeName(options.person)
+    local store = records()
+    local out = {}
+
+    for index = #(store.contests or {}), 1, -1 do
+        local contest = store.contests[index]
+        local matches = true
+
+        if person and (Mdt.normalizeName(contest.person) or ''):lower() ~= person:lower() then matches = false end
+        if options.status and (contest.status or 'scheduled') ~= options.status then matches = false end
+
+        if matches then out[#out + 1] = contest end
+        if #out >= 50 then break end
+    end
+
+    return out
+end
+
+--- Hear one contested fine.
+--- @return table contest
+local function hearContest(contest, nowSeconds)
+    local rules = config().Bail or {}
+    local store = records()
+    local fine
+
+    for _, candidate in ipairs(store.fines or {}) do
+        if candidate.id == contest.fine then fine = candidate end
+    end
+
+    contest.heardAt = tonumber(nowSeconds) or epoch()
+
+    local struck = Mdt.hash01(tostring(contest.id) .. ':contest') < (tonumber(rules.contestStrikeChance) or 0.45)
+
+    if struck and fine then
+        contest.status = 'struck'
+        fine.status = 'waived'
+        fine.waivedAt = contest.heardAt
+        fine.waivedBy = 'court'
+        fine.waiveReason = 'contested and struck out'
+
+        local paid = math.max(0, tonumber(fine.paid) or 0)
+
+        if paid > 0 then
+            contest.refund = paid
+            store.department.balance = math.max(0, (tonumber(store.department.balance) or 0) - paid)
+        end
+    else
+        contest.status = 'upheld'
+        if fine then fine.contest = 'upheld' end
+    end
+
+    if fine then fine.contest = contest.status end
+
+    return contest
+end
+
+--- Walk the contest docket. Idempotent.
+--- @return number heard
+local function sweepContests(nowSeconds)
+    local store = records()
+    local now = tonumber(nowSeconds) or epoch()
+    local heard = 0
+
+    for _, contest in ipairs(store.contests or {}) do
+        if (contest.status or 'scheduled') == 'scheduled' and (tonumber(contest.hearingAt) or math.huge) <= now then
+            hearContest(contest, now)
+            heard = heard + 1
+        end
+    end
+
+    if heard > 0 then P.save() end
+
+    return heard
+end
+
+--- Contest a fine. One open contest per fine.
+--- @return table result
+local function contestFine(source, id)
+    local entry, reason = onDuty(source)
+
+    if not entry then return { ok = false, reason = reason } end
+
+    local store = records()
+    local fine
+
+    for _, candidate in ipairs(store.fines or {}) do
+        if candidate.id == tostring(id or '') then fine = candidate end
+    end
+
+    if not fine then return { ok = false, reason = 'unknown_fine' } end
+    if (fine.status or 'unpaid') == 'waived' then return { ok = false, reason = 'waived' } end
+
+    for _, contest in ipairs(store.contests or {}) do
+        if contest.fine == fine.id and (contest.status or 'scheduled') == 'scheduled' then
+            return { ok = false, reason = 'already_contested' }
+        end
+    end
+
+    local rules = config().Bail or {}
+    local nowSeconds = epoch()
+    local contest = {
+        id = P.newId('CCT'),
+        fine = fine.id,
+        person = fine.person,
+        plate = fine.plate,
+        amount = fine.amount,
+        status = 'scheduled',
+        filedAt = nowSeconds,
+        hearingAt = nowSeconds + math.max(1, tonumber(rules.contestDays) or 3) * 86400,
+        officer = entry.identifier,
+    }
+
+    store.contests[#store.contests + 1] = contest
+    P.trim(store.contests, tonumber(rules.contestHistory) or 200)
+
+    fine.contest = 'scheduled'
+    P.save()
+
+    local days = math.max(1, tonumber(rules.contestDays) or 3)
+
+    notify(source, ('%s is contesting %s ($%d) - hearing in %d days.'):format(tostring(fine.person),
+        tostring(fine.id), math.floor(tonumber(fine.amount) or 0), days))
+
+    return {
+        ok = true,
+        id = contest.id,
+        fine = fine.id,
+        person = fine.person,
+        hearingAt = contest.hearingAt,
+        days = days,
+    }
+end
+
+exports('ContestFine', function(source, id) return contestFine(source, id) end)
+exports('ListContests', function(filter) return listContests(filter) end)
+exports('SweepContests', function(nowSeconds) return sweepContests(nowSeconds) end)
+
+RegisterNetEvent('fk_police:server:fine:contest', function(id)
+    local source = source
+    local result = contestFine(source, id)
+
+    if result.ok then return end
+
+    local reasons = {
+        unknown_fine = 'that ticket is not on the ledger',
+        already_contested = 'that ticket is already waiting on a hearing',
+        waived = 'that ticket was already waived',
+        off_duty = 'go on duty first',
+        no_identifier = 'go on duty first',
+    }
+
+    notify(source, ('Contest: %s.'):format(reasons[result.reason] or tostring(result.reason)))
+end)
+
+RegisterCommand('contest', function(source, args)
+    local src = tonumber(source) or 0
+    local id = (args or {})[1]
+
+    if not id then
+        local open = listContests({ status = 'scheduled' })
+
+        if #open == 0 then return notify(src, 'No contested tickets waiting.') end
+
+        for index = 1, math.min(#open, 6) do
+            local contest = open[index]
+
+            notify(src, ('%s %s - hearing %s.'):format(tostring(contest.id), tostring(contest.person),
+                os.date('!%Y-%m-%d', tonumber(contest.hearingAt) or epoch())))
+        end
+
+        return
+    end
+
+    local result = contestFine(src, id)
+
+    notify(src, result.ok
+        and ('Hearing set for %s in %d days.'):format(tostring(result.fine), result.days)
+        or ('Contest: %s.'):format(tostring(result.reason)))
+end)
+
+-- --- commands ---------------------------------------------------------------
+
+--- Join the tail of an argument list back into one string ("Marcus Vance").
+local function joinArgs(args, from)
+    local parts = {}
+
+    for index = from or 2, #(args or {}) do parts[#parts + 1] = tostring(args[index]) end
+
+    return #parts > 0 and table.concat(parts, ' ') or nil
+end
+
+RegisterCommand(config().Commands.lab or 'lab', function(source, args)
+    local src = tonumber(source) or 0
+    local list = args or {}
+    local action = tostring(list[1] or ''):lower()
+
+    if action == '' or action == 'list' then
+        local samples = forensicsFor({})
+
+        if #samples == 0 then return notify(src, 'The lab has nothing on file.') end
+
+        for index = 1, math.min(#samples, 6) do
+            local sample = samples[index]
+            local line = sample.result and sample.result.detail or ('at the lab, back in ' ..
+                Mdt.formatDuration(math.max(0, (tonumber(sample.readyAt) or 0) - epoch())))
+
+            notify(src, ('%s %s (%s): %s'):format(tostring(sample.id), tostring(sample.label),
+                tostring(sample.person), line))
+        end
+
+        return
+    end
+
+    local names = { 'dna', 'drugs', 'ballistics', 'prints' }
+    local kind = action
+    local name = joinArgs(list, 2)
+    local result = submitForensics(src, kind, name)
+
+    if not result.ok then
+        if result.reason == 'unknown_kind' then
+            return notify(src, ('Lab kinds: %s.'):format(table.concat(names, ', ')))
+        end
+
+        return notify(src, ('Lab: %s.'):format(tostring(result.reason)))
+    end
+
+    notify(src, ('Sample %s (%s) from %s - back in %s.'):format(tostring(result.id), tostring(result.label),
+        tostring(result.person), Mdt.formatDuration(result.readyIn)))
+end)
+
+RegisterCommand(config().Commands.bail or 'bail', function(source, args)
+    local src = tonumber(source) or 0
+
+    if not P.officerFor(src, true) then return notify(src, 'Go on duty first.') end
+
+    local quote = bailQuote(src)
+
+    if not quote.ok then return notify(src, 'Nobody is in custody to bail.') end
+
+    local amount = tonumber((args or {})[1])
+
+    if not amount then
+        return notify(src, ('Bail for %s is $%d (sentence %s). /bail %d to post it.'):format(tostring(quote.person),
+            math.floor(quote.amount), Mdt.formatDuration(quote.seconds), math.floor(quote.amount)))
+    end
+
+    local result = postBail(src, amount, 'posted at the desk')
+
+    if not result.ok then
+        return notify(src, ('Bail: %s.'):format(result.reason == 'short_payment'
+            and ('the court wants $' .. tostring(result.due)) or tostring(result.reason)))
+    end
+
+    notify(src, ('%s out on $%d bail - court in %d days.'):format(tostring(result.person),
+        math.floor(result.amount), result.courtDays))
+end)
+
+RegisterCommand(config().Commands.court or 'court', function(source, args)
+    local src = tonumber(source) or 0
+    local list = args or {}
+    local action = tostring(list[1] or ''):lower()
+
+    if action == 'attend' and list[2] then
+        local store = records()
+
+        for _, bail in ipairs(store.bails or {}) do
+            if bail.id == tostring(list[2]) and (bail.status or 'posted') == 'posted' then
+                hearBail(bail, epoch())
+                P.save()
+
+                return notify(src, ('%s: %s%s'):format(tostring(bail.person), tostring(bail.status),
+                    bail.outcome and (' (' .. tostring(bail.outcome) .. ')') or ''))
+            end
+        end
+
+        return notify(src, 'No such open court date.')
+    end
+
+    local open = listBails({ status = 'posted' })
+
+    if #open == 0 then return notify(src, 'No court dates on the docket.') end
+
+    notify(src, ('%d court date(s) open.'):format(#open))
+
+    for index = 1, math.min(#open, 6) do
+        local bail = open[index]
+
+        notify(src, ('%s %s - $%d, %d day(s) left.'):format(tostring(bail.id), tostring(bail.person),
+            math.floor(tonumber(bail.amount) or 0), tonumber(bail.daysLeft) or 0))
+    end
+end)
+
+RegisterCommand(config().Commands.hotlist or 'hotlist', function(source, args)
+    local src = tonumber(source) or 0
+    local list = args or {}
+    local action = tostring(list[1] or ''):lower()
+
+    if action == 'add' and list[2] then
+        local result = addHotlist(src, list[2], tonumber(list[3]), joinArgs(list, 4))
+
+        return notify(src, result.ok
+            and ('%s flagged as stolen.'):format(tostring(result.plate))
+            or ('Hotlist: %s.'):format(tostring(result.reason)))
+    end
+
+    if action == 'remove' and list[2] then
+        local result = clearHotlist(src, list[2])
+
+        return notify(src, result.ok and ('%s recovered.'):format(tostring(result.plate)) or 'Not on the hotlist.')
+    end
+
+    local hot = listHotlist()
+
+    if #hot == 0 then return notify(src, 'Nothing on the hotlist.') end
+
+    notify(src, ('%d stolen plate(s) on the hotlist.'):format(#hot))
+
+    for index = 1, math.min(#hot, 8) do
+        local entry = hot[index]
+
+        notify(src, ('%s - %s'):format(tostring(entry.plate), tostring(entry.reason)))
+    end
+end)
+
+RegisterCommand(config().Commands.cameras or 'cameras', function(source, args)
+    local src = tonumber(source) or 0
+    local cameras = cameraList()
+
+    notify(src, ('%d speed cameras: %s.'):format(#cameras,
+        table.concat((function()
+            local labels = {}
+
+            for _, camera in ipairs(cameras) do labels[#labels + 1] = ('%s (%d)'):format(tostring(camera.label), camera.limitKmh) end
+
+            return labels
+        end)(), ', ')))
+
+    local tickets = cameraTickets(3)
+
+    if #tickets > 0 then
+        for _, fine in ipairs(tickets) do
+            notify(src, ('%s: %d km/h in a %d zone, $%d.'):format(tostring(fine.cameraLabel or fine.camera),
+                tonumber(fine.speedKmh) or 0, tonumber(fine.limitKmh) or 0, math.floor(tonumber(fine.amount) or 0)))
+        end
+    end
+end)
+
+-- The one clock the new systems share. Each sweep is idempotent, so the timer
+-- only decides how quickly an answer comes back, never what the answer is.
+CreateThread(function()
+    while true do
+        Wait(5000)
+
+        local nowSeconds = epoch()
+
+        settleForensics(nowSeconds)
+        sweepCourtDates(nowSeconds)
+        sweepContests(nowSeconds)
+        sweepHotlist(nowSeconds)
+        autoHotlist(nowSeconds)
+    end
+end)
+
+-- ---------------------------------------------------------------------------
 -- The MDT bundle: one round trip for everything the page lists
 -- ---------------------------------------------------------------------------
 
@@ -1775,6 +2936,13 @@ local function mdtBundle(source)
             return out
         end)(),
         evidence = evidenceFor(nil),
+        lab = { kinds = (config().Forensics or {}).kinds or {}, list = forensicsFor({}) },
+        bail = bailQuote(source),
+        bails = listBails({}),
+        hotlist = listHotlist(),
+        cameras = cameraList(),
+        cameraTickets = cameraTickets(10),
+        contests = listContests({}),
         callout = P.callout() or false,
     }
 end

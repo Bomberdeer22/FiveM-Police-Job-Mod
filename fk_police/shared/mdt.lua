@@ -697,3 +697,130 @@ function Mdt.normalizeCallsign(value)
 
     return callsign
 end
+
+-- ---------------------------------------------------------------------------
+-- Bail, cameras, hotlist and the lab
+-- ---------------------------------------------------------------------------
+
+--- What the court sets as bail for a sentence: a flat sum plus a per-minute
+--- rate, capped so a 10 minute sentence does not cost more than a car.
+--- @return number
+function Mdt.bailAmount(config, seconds)
+    local rules = (config or {}).Bail or {}
+    local minutes = math.max(0, math.floor((tonumber(seconds) or 0) / 60))
+    local amount = (tonumber(rules.base) or 0) + minutes * (tonumber(rules.perMinute) or 0)
+    local cap = tonumber(rules.max)
+
+    if cap and cap > 0 then amount = math.min(cap, amount) end
+
+    return math.max(0, math.floor(amount))
+end
+
+--- The camera a position is standing in, or nil.
+--- @return table|nil camera
+function Mdt.cameraAt(config, x, y, z)
+    local rules = (config or {}).Cameras or {}
+    local px, py, pz = tonumber(x), tonumber(y), tonumber(z)
+
+    if not px or not py or not pz then return nil end
+
+    for _, camera in ipairs(rules.cameras or {}) do
+        local coords = camera.coords or {}
+        local radius = tonumber(camera.radius) or tonumber(rules.defaultRadius) or 30.0
+        local dx = px - (tonumber(coords.x) or 0)
+        local dy = py - (tonumber(coords.y) or 0)
+        local dz = pz - (tonumber(coords.z) or 0)
+
+        if (dx * dx) + (dy * dy) + (dz * dz) <= radius * radius then return camera end
+    end
+
+    return nil
+end
+
+--- Is this speed (m/s) over the camera's limit? Returns the reading in km/h too.
+--- @return boolean, number
+function Mdt.overLimit(camera, speed)
+    local limitKmh = tonumber(camera and camera.limitKmh) or 0
+    local kmh = math.max(0, (tonumber(speed) or 0) * 3.6)
+
+    return limitKmh > 0 and kmh > limitKmh, kmh
+end
+
+--- The live hotlist entry for a plate, if it has not expired.
+--- @return table|nil
+function Mdt.hotlistEntry(hotlist, plate, nowSeconds)
+    local wanted = Mdt.normalizePlate(plate)
+
+    if not wanted then return nil end
+
+    local now = tonumber(nowSeconds) or 0
+
+    for _, entry in ipairs(hotlist or {}) do
+        if Mdt.normalizePlate(entry.plate) == wanted then
+            if not entry.expiresAt or tonumber(entry.expiresAt) <= now then return nil end
+
+            return entry
+        end
+    end
+
+    return nil
+end
+
+--- The hotlist without the expired entries, newest first.
+--- @return table
+function Mdt.activeHotlist(hotlist, nowSeconds)
+    local now = tonumber(nowSeconds) or 0
+    local out = {}
+
+    for index = #(hotlist or {}), 1, -1 do
+        local entry = hotlist[index]
+
+        if not entry.expiresAt or tonumber(entry.expiresAt) > now then out[#out + 1] = entry end
+    end
+
+    return out
+end
+
+--- One lab kind by id.
+--- @return table|nil
+function Mdt.forensicsKind(config, id)
+    local wanted = tostring(id or ''):lower()
+
+    for _, kind in ipairs(((config or {}).Forensics or {}).kinds or {}) do
+        if kind.id == wanted then return kind end
+    end
+
+    return nil
+end
+
+--- The lab's answer for a sample. Deterministic: the sample id seeds the roll,
+--- so a result never changes once it has been reported.
+--- @return table { hit, label, detail, confidence }
+function Mdt.sampleResult(config, sampleId, kindId, person)
+    local rules = (config or {}).Forensics or {}
+    local kind = Mdt.forensicsKind(config, kindId) or { id = tostring(kindId or 'unknown'), label = 'Sample' }
+    local roll = Mdt.hash01(tostring(sampleId or '') .. ':lab:' .. tostring(kind.id))
+    local hit = roll < (tonumber(rules.hitChance) or 0.6)
+    local who = Mdt.normalizeName(person) or 'the subject'
+    local detail
+
+    if kind.id == 'dna' then
+        detail = hit and ('DNA profile matches ' .. who) or 'No profile on file for this sample'
+    elseif kind.id == 'drugs' then
+        detail = hit and 'Positive: cocaine residue, weight consistent with possession' or 'No controlled substance detected'
+    elseif kind.id == 'ballistics' then
+        detail = hit and 'Casing matches an unsolved shooting in the district' or 'No match in the casings database'
+    elseif kind.id == 'prints' then
+        detail = hit and ('Latent prints identified: ' .. who) or 'No usable prints lifted'
+    else
+        detail = hit and 'Sample matched an open case' or 'No match found'
+    end
+
+    return {
+        kind = kind.id,
+        label = kind.label,
+        hit = hit,
+        detail = detail,
+        confidence = math.floor(70 + (roll * 29)),
+    }
+end

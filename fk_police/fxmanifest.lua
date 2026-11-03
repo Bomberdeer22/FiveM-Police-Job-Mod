@@ -3,8 +3,8 @@ game 'gta5'
 
 name 'fk_police'
 author 'fk'
-description 'LSPDFR-style police job for a single-player server: duty, MDT, dispatch callouts, traffic stops, citations, arrests, jail, backup, fines, warrants, BOLOs, reports, impound, pursuits, field work, shifts and rank progression.'
-version '0.3.0'
+description 'LSPDFR-style police job for a single-player server: duty, MDT, dispatch callouts, traffic stops, citations, arrests, jail, bail and court dates, backup, fines, warrants, BOLOs, reports, impound, pursuits, field work, a forensics lab, a stolen hotlist with ANPR, speed cameras, shifts and rank progression.'
+version '0.4.0'
 
 dependencies {
     'fk_economy',

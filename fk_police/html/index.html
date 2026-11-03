@@ -63,6 +63,9 @@
     <button class="tab" data-tab="fines" role="tab">Fines</button>
     <button class="tab" data-tab="impound" role="tab">Impound</button>
     <button class="tab" data-tab="shift" role="tab">Shift</button>
+    <button class="tab" data-tab="lab" role="tab">Lab</button>
+    <button class="tab" data-tab="court" role="tab">Court</button>
+    <button class="tab" data-tab="traffic" role="tab">Traffic</button>
   </nav>
 
   <main class="panels">
@@ -185,6 +188,48 @@
           <tr><th>Exhibit</th><th>Person</th><th>Items</th><th>Kind</th><th>At</th></tr>
         </thead>
         <tbody id="evidence-body"></tbody>
+      </table>
+    </section>
+
+    <section class="panel" id="panel-lab">
+      <p class="hint">Samples go to the lab and answer on their own. The result is fixed when the sample is taken, so it cannot be re-rolled.</p>
+      <form id="form-lab" class="stack">
+        <div class="row">
+          <select id="lab-kind"></select>
+          <input id="lab-person" placeholder="Person (blank = whoever is stopped)" autocomplete="off">
+          <button type="submit">Send sample</button>
+        </div>
+      </form>
+      <div id="lab-list" class="list"></div>
+    </section>
+
+    <section class="panel" id="panel-court">
+      <p class="hint" id="bail-hint">Nobody is in custody.</p>
+      <div class="row">
+        <input id="bail-amount" type="number" min="0" step="50" placeholder="Bail (blank = the court's figure)">
+        <button id="bail-post" class="ghost">Post bail and set a date</button>
+      </div>
+      <div id="court-list" class="list"></div>
+    </section>
+
+    <section class="panel" id="panel-traffic">
+      <form id="form-hotlist" class="stack">
+        <div class="row">
+          <input id="hotlist-plate" placeholder="Plate, e.g. MARCUS1" autocomplete="off">
+          <input id="hotlist-minutes" type="number" min="1" max="1440" value="240" placeholder="Minutes">
+          <button type="submit">Flag as stolen</button>
+        </div>
+        <input id="hotlist-reason" placeholder="Dispatch note" autocomplete="off">
+      </form>
+      <div id="hotlist-list" class="list"></div>
+      <h2 class="sub">Speed cameras</h2>
+      <div id="camera-list" class="cards"></div>
+      <h2 class="sub">Camera tickets</h2>
+      <table class="table">
+        <thead>
+          <tr><th>ID</th><th>Camera</th><th>Reading</th><th>Fine</th><th>Issued</th></tr>
+        </thead>
+        <tbody id="camera-body"></tbody>
       </table>
     </section>
   </main>

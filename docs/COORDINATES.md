@@ -163,3 +163,25 @@ The room's bounding box is large (~11 m) and L-shaped, so the bounding-box centr
 used; the placement origin (a point both interiors agree on) is.
 
 The spawn heading is `90` (west), towards the door on the -x side.
+
+---
+
+## 8. Speed camera posts (`Config.Cameras`)
+
+The camera posts are landmarks, not measured interior props: each one is the
+middle of a well-known road junction, so the radius (`Config.Cameras.defaultRadius`,
+32 m) covers both carriageways without reaching the buildings behind them. They are
+ordinary config values — move one, change its `limitKmh`, or add a post anywhere.
+
+| Post | Coords (x, y, z) | Limit | Landmark it sits on |
+| --- | --- | --- | --- |
+| `cam_legion` | 215.0, -810.0, 30.7 | 50 km/h | Legion Square, the plaza between the bank and the fountains |
+| `cam_mission` | 425.1, -979.5, 30.7 | 50 km/h | Mission Row PD frontage, the road the station sits on |
+| `cam_pier` | -1850.0, -1231.0, 13.0 | 65 km/h | Del Perro Pier approach, the seafront road |
+| `cam_sandy` | 1848.0, 3690.0, 34.0 | 80 km/h | Sandy Shores main road, the highway through the town |
+| `cam_paleto` | -380.0, 6040.0, 31.0 | 65 km/h | Paleto Bay high street, the road past the sheriff's office |
+
+The server compares the reported position against each post's radius
+(`Mdt.cameraAt`), so a post only reads the cars actually passing it. Nothing else in
+the resource depends on these numbers: `/cameras` and the MDT **Traffic** tab read the
+same table, and a test asserts the list is not empty.

@@ -29,6 +29,10 @@ local records = {
     bookings = {},
     verdicts = {},
     evidence = {},
+    bails = {},
+    hotlist = {},
+    forensics = {},
+    contests = {},
     department = { balance = 0 },
 }
 
@@ -157,6 +161,10 @@ local function load()
         bookings = {},
         verdicts = {},
         evidence = {},
+        bails = {},
+        hotlist = {},
+        forensics = {},
+        contests = {},
         department = { balance = 0 },
     }
 
@@ -198,7 +206,7 @@ local function load()
     records.arrests = type(data.arrests) == 'table' and data.arrests or {}
     records.officers = type(data.officers) == 'table' and data.officers or {}
 
-    for _, key in ipairs({ 'fines', 'warrants', 'bolos', 'reports', 'impounds', 'shifts', 'pursuits', 'bookings', 'verdicts', 'evidence' }) do
+    for _, key in ipairs({ 'fines', 'warrants', 'bolos', 'reports', 'impounds', 'shifts', 'pursuits', 'bookings', 'verdicts', 'evidence', 'bails', 'hotlist', 'forensics', 'contests' }) do
         records[key] = type(data[key]) == 'table' and data[key] or {}
     end
 
@@ -429,6 +437,7 @@ RegisterNetEvent('fk_police:server:anpr', function(plate)
 
     local report = Mdt.plateReport(records, plate, epoch())
     local owner = report.vehicle and Mdt.findPerson(records, report.vehicle.owner)
+    local hot = Mdt.hotlistEntry(records.hotlist, plate, epoch())
 
     TriggerClientEvent('fk_police:client:anpr', source, {
         plate = Mdt.normalizePlate(plate),
@@ -438,7 +447,8 @@ RegisterNetEvent('fk_police:server:anpr', function(plate)
         ownerFlags = Mdt.personFlags(owner),
         bolos = report.bolos,
         impounded = report.impounded ~= nil,
-        stolen = report.vehicle and report.vehicle.stolen == true or false,
+        stolen = (report.vehicle and report.vehicle.stolen == true) or hot ~= nil,
+        hotlist = hot,
     })
 end)
 

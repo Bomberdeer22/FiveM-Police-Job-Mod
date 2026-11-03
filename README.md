@@ -24,7 +24,10 @@ The police job — the biggest piece of the project. It takes LSPDFR's systems (
 uniform, police computer, traffic stops, citations, arrests, dispatch callouts, backup,
 rank progression) and adds the parts a server-based job needs to actually run: a fine
 ledger that goes overdue, warrants, BOLOs, a radar/ANPR, incident reports, an impound
-lot, pursuits, a cell, field work and paid shifts. LSPDFR itself cannot be installed
+lot, pursuits, a cell, field work and paid shifts — plus the detective half: a forensics
+lab that answers on its own clock, bail and court dates that turn into warrants when they
+are missed, a stolen-vehicle hotlist the ANPR reads back, and fixed speed cameras that
+write their own tickets. LSPDFR itself cannot be installed
 (it runs on RAGE Plugin Hook in single-player GTA V), so all of it is native FiveM,
 with the server as the only authority.
 
@@ -37,11 +40,12 @@ Full feature-by-feature mapping, keys and behaviour differences:
 | --- | --- |
 | **Duty & station** | Mission Row marker (**E**): duty, locker, armoury, garage, computer, jail. Duty puts the uniform on and starts a **shift**; leaving duty pays the shift and puts your own clothes back. |
 | **HUD** | Top-right overlay while on duty: rank, XP bar, shift timer, active callout with live distance, radar speed + plate with an ANPR alert, backup ETA, pursuit timer, custody timer and a bodycam REC chip. |
-| **MDT** (9 tabs) | **People**, **Vehicles**, **Calls**, **Charges**, **BOLOs** (+ warrants), **Reports**, **Fines**, **Impound**, **Shift** (counters, history, pursuits, medals, the court docket, the evidence locker). Search results carry warrants, BOLOs, impound state and what the person owes. |
+| **MDT** (12 tabs) | **People**, **Vehicles**, **Calls**, **Charges**, **BOLOs** (+ warrants), **Reports**, **Fines**, **Impound**, **Shift** (counters, history, pursuits, medals, the court docket, the evidence locker), **Lab**, **Court**, **Traffic** (hotlist, cameras, camera tickets). Search results carry warrants, BOLOs, impound state and what the person owes. |
 | **Dispatch** | 11 weighted callout types; a scene 120–550 m away; **Y** accepts, **X** asks dispatch now. Accepting populates the scene with armed suspects. |
 | **Traffic stops** | **F10** stops the car in front: plate, owner, registration, insurance, stolen status, BOLOs, warrants, outstanding fines and impound state. The driver waits `Config.Traffic.waitSeconds`. |
 | **Citations & fines** | **F6** writes a citation from `Config.Charges`; the fine is priced on the server, the officer is paid a fee + share, and a **ledger entry** is created with a due date. |
 | **Fines ledger** | Unpaid fines appear in the MDT with the amount owed and the due date. Collect (full or part), waive, or let the **court sweep** run when you next go on duty: overdue fines **suspend the licence** and put out an **unpaid-fines warrant**. |
+| **Contested fines** | Any unpaid ticket can be contested (MDT **Fines** → *Contest*, or `/contest <id>`). The hearing is set `Config.Bail.contestDays` out and heard by the server: the fine is either **upheld** or **struck out** (and anything already paid is refunded out of the court fund). `/contest` lists the open hearings. |
 | **Warrants** | Issue from a person record or `/warrant add`, revoke, auto-expire; they show on every lookup and stop, and an arrest clears the warrant it was made for. |
 | **BOLOs & ANPR** | Vehicle/person BOLOs with an expiry, cleared from the MDT or `/bolo`. The radar reads the plate in front and the ANPR flags stolen cars, BOLOs, expired papers and warrants in chat and on the HUD. |
 | **Arrests & custody** | **F7** cuffs and books: fine + sentence, warrant cleared, arrest record. `/jail` (or **Book** in the flow) walks the suspect into the cell for the sentence; release early or let it run out. |
@@ -52,9 +56,13 @@ Full feature-by-feature mapping, keys and behaviour differences:
 | **Impound** | `/impound [reason]` seizes the stopped car (stolen cars carry a surcharge) and **the car is towed off the street**; the lot is in the MDT, and releasing a car takes the fee from the bank into the court fund. |
 | **Pursuits** | `/pursuit start` (needs a stop or an accepted callout) auto-requests code 3, `/pit` spins a car, `/spikes` deploys a 2-minute stinger, `/pursuit end <outcome>` logs it and pays XP for an arrest. |
 | **Field work** | `/frisk` (deterministic pockets per person), `/breath` (breath test against the 0.08 limit, suggests the DUI charge), `/k9` (the dog works the stopped car). |
+| **Forensics lab** | `/lab dna`, `/lab drugs`, `/lab ballistics`, `/lab prints` (or the Lab tab) take a sample from the person in front of you. The answer comes back on the server's clock (`Config.Forensics.labSeconds`) and is rolled from the sample id, so it can never be re-rolled: DNA matches, drug positives, casing traces and prints, each with a confidence figure. The result lands in chat and in the Lab tab. |
+| **Bail & court dates** | `/jail` books; `/bail` quotes the court's figure (`base + perMinute x sentence`), `/bail <amount>` posts it, and a court date is set (`Config.Bail.courtDays`). The Court tab lists the docket and can bring a case forward. A date that passes is heard: guilty keeps the money, an acquittal refunds it out of the court fund, and a **no-show issues a failure-to-appear warrant** on the person. |
+| **Stolen hotlist** | `/hotlist add <plate> [minutes] [why]`, `/hotlist remove <plate>`, or the Traffic tab. The radar's ANPR reads a hotlisted plate as stolen (with the dispatch note) even when the vehicle record is clean; dispatch flags cars by itself every `Config.Hotlist.autoMinutes` so patrol has something to find, and flags expire on their own. |
+| **Speed cameras** | Five fixed posts in `Config.Cameras` (Legion Square, Mission Row, Del Perro Pier, Sandy Shores, Paleto Bay). The patrol car reports its position and speed every second while on duty; the **server** decides whether a camera saw a speeding car and writes the ticket into the same fine ledger as a roadside citation, billing the registered keeper. A per-camera/plate cooldown stops a camera double-ticketing. `/cameras` lists the posts and the last tickets; the Traffic tab shows the same. |
 | **Backup** | Code 2/3, air, K9, SWAT, EMS and fire, each with its own model, unit count and ETA; the HUD counts the ETA down. |
 | **Ranks & pay** | XP from callouts, citations, arrests, reports and pursuits; `Config.Ranks` sets thresholds and salary; `Config.Pay` the roadside fees and the officer's fine share. |
-| **Records** | `fk_police/data/records.json` — people, vehicles, citations, arrests, officers, fines, warrants, BOLOs, reports, impounds, shifts, pursuits, bookings, verdicts, evidence, court fund. Crash-safe (`Persist`: `.bak` + rotating snapshots). |
+| **Records** | `fk_police/data/records.json` — people, vehicles, citations, arrests, officers, fines, warrants, BOLOs, reports, impounds, shifts, pursuits, bookings, verdicts, evidence, bails, hotlist, forensics, contests, court fund. Crash-safe (`Persist`: `.bak` + rotating snapshots). |
 
 ### Install
 
@@ -153,6 +161,22 @@ exports.fk_police:PursuitState(src)
 exports.fk_police:Frisk(src), Breathalyzer(src), K9(src)
 exports.fk_police:ResolveCallout(src, coords)
 exports.fk_police:RequestBackup(src, 'code3')
+exports.fk_police:SubmitForensics(src, 'dna', 'Ellis Roan')
+exports.fk_police:ListForensics({ person = 'Ellis Roan' })
+exports.fk_police:SettleForensics()        -- close every sample that is due
+exports.fk_police:BailQuote(src)
+exports.fk_police:PostBail(src, 330, 'paid at the desk')
+exports.fk_police:ListBails({ status = 'posted' })
+exports.fk_police:SweepCourtDates()        -- hear every date that has passed
+exports.fk_police:ListHotlist()
+exports.fk_police:AddHotlist(src, 'OWEN555', 120, 'robbery getaway')
+exports.fk_police:ClearHotlist(src, 'OWEN555')
+exports.fk_police:ListCameras()
+exports.fk_police:CheckCamera(src, { x = 215.0, y = -810.0, z = 30.7, speed = 20.0, plate = 'MARCUS1' })
+exports.fk_police:CameraTickets(10)
+exports.fk_police:ContestFine(src, 'FINE-1')
+exports.fk_police:ListContests({ status = 'scheduled' })
+exports.fk_police:SweepContests()
 ```
 
 Every export validates the caller exactly like the net events — they are for other
@@ -176,6 +200,10 @@ resources on this server, not a way around the checks.
 | `Config.Reports` | Field lengths, kinds, XP, cap |
 | `Config.Impound`, `Config.Pursuit` | Fees, outcomes, caps |
 | `Config.Field` | Frisk table, DUI limit, K9, spike strips |
+| `Config.Bail` | Bail pricing, court date window, no-show odds and warrant, contested-fine hearings |
+| `Config.Forensics` | Lab kinds, wait, hit chance, XP, caps |
+| `Config.Hotlist` | Flag lifetime, how often dispatch flags a car, cap |
+| `Config.Cameras` | Each post (coords, limit), radius, cooldown, default fine |
 | `Config.Radar`, `Config.Hud` | Radar range, HUD refresh |
 | `Config.Records`, `Config.Seed` | Record file, retention, starter population |
 | `Config.Keys`, `Config.Commands` | Key codes and command names |
@@ -184,7 +212,7 @@ resources on this server, not a way around the checks.
 
 | File | Contents |
 | --- | --- |
-| `data/records.json` | `people`, `vehicles`, `citations`, `arrests`, `officers`, `fines`, `warrants`, `bolos`, `reports`, `impounds`, `shifts`, `pursuits`, `bookings`, `department` |
+| `data/records.json` | `people`, `vehicles`, `citations`, `arrests`, `officers`, `fines`, `warrants`, `bolos`, `reports`, `impounds`, `shifts`, `pursuits`, `bookings`, `verdicts`, `evidence`, `bails`, `hotlist`, `forensics`, `contests`, `department` |
 
 Written through the same `Persist` helper as the other resources (`.bak` fallback and
 rotating snapshots), so a killed server cannot lose the record store.
@@ -899,8 +927,8 @@ Consumables, services and vehicles are *not* stored (they are used at the till);
 ### CI
 
 `.github/workflows/tests.yml` runs `npm run check` on every push and pull request: it
-compiles all 25 Lua files with fengari (`tools/lint-lua.js`), then runs the five test
-suites (454 checks) against a real Lua VM and jsdom.
+compiles all 35 Lua files with fengari (`tools/lint-lua.js`), then runs the eight test
+suites (821 checks) against a real Lua VM and jsdom.
 
 ---
 
@@ -969,7 +997,7 @@ with mocked FiveM natives, and the NUI page runs in jsdom.
 
 ```bash
 npm install
-npm run check   # lint every Lua file + all 782 checks
+npm run check   # lint every Lua file + all 821 checks
 ```
 
 * **124 economy checks** — starting balances, overdraft refusal, invalid
@@ -1022,7 +1050,7 @@ npm run check   # lint every Lua file + all 782 checks
   **join timeline** (streaming → `spawn_pending` → `complete`, the console lines, and
   `/joinstatus` in both states), and the single-player warning (printed once instead of
   every 15 s).
-* **286 fk_police checks** — plate/name normalisation, person and vehicle records, flags and
+* **360 fk_police checks** — plate/name normalisation, person and vehicle records, flags and
   warrants, sentence maths (unknown charges ignored, duplicates counted once), ranks and
   callout weights; then the real server: seeding, duty and statebags, searches (on/off
   duty, unknown plates and kinds), traffic stops, citations (fine ✓, fee + fine share paid
@@ -1050,11 +1078,23 @@ npm run check   # lint every Lua file + all 782 checks
   per-person filter, a restart), callsigns (set, normalised, refusing nonsense, surviving
   a restart) and medals (thresholds), the whole MDT bundle, persistence of every new section, the expanded
   HUD in jsdom (rank/XP bar, shift timer, callout distance, radar + alert, backup ETA,
-  pursuit and custody chips, hidden off duty or behind the MDT), the nine MDT tabs with
+  pursuit and custody chips, hidden off duty or behind the MDT), the twelve MDT tabs with
   the medals, the court docket and the evidence locker,
   working BOLO/report/fine/impound/warrant buttons, and three contract checks that every
   `Config.<key>`, `Mdt.<fn>`, net event and NUI callback the code references actually
-  exists.
+  exists; then the 0.4.0 layer: the lab (a sample for the stopped suspect, XP, pending
+  then answered on the clock, a deterministic result with a confidence figure, the chat
+  notice, the client push, unknown kinds and no-subject refusal), bail (pricing, the
+  short-payment refusal, a posted date two weeks out, custody cleared, the docket, a date
+  heard by the sweep with either a verdict or a warrant), the hotlist (flagging,
+  normalisation, duplicates, the ANPR reading it back as stolen, recovery, dispatch
+  flagging a car by itself after `autoMinutes`, expiry), the cameras (under and over the
+  limit, the ticket on the fine ledger, the registered keeper, the cooldown, the chat and
+  client notices, a position away from any post, the configured list), every new chat
+  command, and the Lab/Court/Traffic tabs in jsdom (results, the picker, the docket, the
+  hotlist, the tickets, and the forms actually posting), contested fines (filing, the
+  duplicate and unknown-ticket refusals, the hearing being heard, an upheld versus a
+  struck fine, and the Contest button on the fine row).
 
 ## Troubleshooting
 

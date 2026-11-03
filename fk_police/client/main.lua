@@ -1248,6 +1248,11 @@ RegisterNUICallback('fineCollect', function(data, cb)
     cb({ ok = true })
 end)
 
+RegisterNUICallback('fineContest', function(data, cb)
+    TriggerServerEvent('fk_police:server:fine:contest', tostring(data.id or ''))
+    cb({ ok = true })
+end)
+
 RegisterNUICallback('fineWaive', function(data, cb)
     TriggerServerEvent('fk_police:server:fine:waive', tostring(data.id or ''), tostring(data.reason or ''))
     cb({ ok = true })
@@ -1291,6 +1296,77 @@ end)
 RegisterNUICallback('impound', function(data, cb)
     TriggerServerEvent('fk_police:server:impound', tostring(data.reason or ''))
     cb({ ok = true })
+end)
+
+RegisterNUICallback('labSubmit', function(data, cb)
+    TriggerServerEvent('fk_police:server:lab', tostring(data.kind or 'dna'), data.person)
+    cb({ ok = true })
+end)
+
+RegisterNUICallback('bailPost', function(data, cb)
+    TriggerServerEvent('fk_police:server:bail', tonumber(data.amount), tostring(data.note or ''))
+    cb({ ok = true })
+end)
+
+RegisterNUICallback('courtAttend', function(data, cb)
+    TriggerServerEvent('fk_police:server:court', 'attend', tostring(data.id or ''))
+    cb({ ok = true })
+end)
+
+RegisterNUICallback('hotlistAdd', function(data, cb)
+    TriggerServerEvent('fk_police:server:hotlist', 'add', tostring(data.plate or ''), tonumber(data.minutes),
+        tostring(data.reason or ''))
+    cb({ ok = true })
+end)
+
+RegisterNUICallback('hotlistClear', function(data, cb)
+    TriggerServerEvent('fk_police:server:hotlist', 'clear', tostring(data.id or data.plate or ''))
+    cb({ ok = true })
+end)
+
+-- ---------------------------------------------------------------------------
+-- Speed cameras: the patrol car reports its position and speed to the server
+-- ---------------------------------------------------------------------------
+-- The server owns the camera list, the cooldown and the ticket; this thread
+-- only says "I am here, going this fast, in this plate".
+CreateThread(function()
+    while true do
+        Wait(1000)
+
+        if status.onDuty then
+            local ped = PlayerPedId()
+            local vehicle = GetVehiclePedIsIn(ped, false)
+
+            if vehicle and vehicle ~= 0 and GetPedInVehicleSeat(vehicle, -1) == ped then
+                local coords = GetEntityCoords(vehicle)
+
+                TriggerServerEvent('fk_police:server:camera', {
+                    x = coords.x,
+                    y = coords.y,
+                    z = coords.z,
+                    speed = GetEntitySpeed(vehicle),
+                    plate = GetVehicleNumberPlateText(vehicle),
+                })
+            end
+        end
+    end
+end)
+
+RegisterNetEvent('fk_police:client:camera', function(result)
+    if not result or not result.ticketed then return end
+
+    notify(('Camera %s: %d km/h in a %d zone. Ticket %s ($%d) is on the fine ledger.'):format(
+        tostring(result.label or result.camera), tonumber(result.kmh) or 0, tonumber(result.limitKmh) or 0,
+        tostring(result.fine), math.floor(tonumber(result.amount) or 0)))
+
+    SendNUIMessage({ action = 'camera', result = result })
+end)
+
+RegisterNetEvent('fk_police:client:lab', function(sample)
+    if not sample or not sample.result then return end
+
+    notify(('Lab: %s - %s'):format(tostring(sample.label or sample.kind), tostring(sample.result.detail)))
+    SendNUIMessage({ action = 'labResult', sample = sample })
 end)
 
 CreateThread(function()
