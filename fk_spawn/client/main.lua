@@ -12,6 +12,11 @@ local spawning = false
 local lastSpawnAt = 0
 local joinSpawnDone = false
 
+-- The first thing this resource does: tell the server our scripts are alive.
+-- If the console never shows this line for a player, that player's PC is still
+-- streaming resources and nothing in here has run yet.
+TriggerServerEvent('fk_spawn:server:hello')
+
 -- ---------------------------------------------------------------------------
 -- Notifications
 -- ---------------------------------------------------------------------------

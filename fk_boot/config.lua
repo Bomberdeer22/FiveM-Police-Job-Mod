@@ -48,6 +48,17 @@ Config.Deferred = {
 
     -- true: print what is deferred and when it starts. Leave on; it is two lines.
     verbose = true,
+
+    -- Hold new connections while the packs are still starting. A client that
+    -- joins in the middle of a big resource download can sit on the loading
+    -- screen at 100% for ever, because the files it is fetching keep changing.
+    -- With this on, the loading screen shows "starting <pack>" instead and the
+    -- player is let in as soon as the pack is up.
+    gateJoins = true,
+
+    -- Give up on the gate after this many seconds and let the player in with an
+    -- explanation, so a broken pack cannot lock everybody out.
+    gateTimeout = 300,
 }
 
 -- Shown in the startup banner. Nothing else reads this.

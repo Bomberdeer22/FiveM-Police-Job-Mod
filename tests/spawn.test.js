@@ -755,6 +755,57 @@ check('the client grants temporary invulnerability after the teleport',
   /SetPlayerInvincible\(playerId, true\)/.test(fs.readFileSync(path.join(ROOT, 'client', 'main.lua'), 'utf8')));
 
 // ---------------------------------------------------------------------------
+// Join diagnostics — which side is stuck when a client sits on 100%
+// ---------------------------------------------------------------------------
+
+const timeline = createHarness();
+timeline.runThreads();
+
+timeline.fireEvent('playerConnecting', 4, ['Player4']);
+timeline.fireEvent('playerJoining', 4);
+
+const early = timeline.callExport('GetJoinStatus', [4])[0];
+check('a join starts in the streaming stage',
+  early && early.stage === 'streaming' && early.clientUp === false, early);
+
+timeline.fireNet('fk_spawn:server:hello', 4);
+const up = timeline.callExport('GetJoinStatus', [4])[0];
+check('the client hello moves it to spawn_pending',
+  up && up.stage === 'spawn_pending' && up.clientUp === true, up);
+check('the console says when the client scripts came up',
+  timeline.captured.logs.some((line) => /client scripts are up after \d+s/.test(line)),
+  timeline.captured.logs.slice(-4));
+
+timeline.fireNet('fk_spawn:server:spawned', 4, ['michael_bedroom', -807.343, 174.981, 71.163]);
+const complete = timeline.callExport('GetJoinStatus', [4])[0];
+check('the spawn confirmation completes the join',
+  complete && complete.stage === 'complete' && complete.spawned === true, complete);
+check('the console reports the total join time',
+  timeline.captured.logs.some((line) => /finished joining after \d+s/.test(line)),
+  timeline.captured.logs.slice(-4));
+
+timeline.runCommand('joinstatus', 4, []);
+const joinReply = timeline.captured.client
+  .filter((event) => event.name === 'fk_spawn:client:notify').pop();
+check('/joinstatus answers in chat with the join time',
+  !!joinReply && /Player 4: joined in \d+s\./.test(joinReply.args[0]), joinReply && joinReply.args);
+
+const streamingOnly = createHarness();
+streamingOnly.runThreads();
+streamingOnly.fireEvent('playerConnecting', 5, ['Player5']);
+streamingOnly.fireEvent('playerJoining', 5);
+streamingOnly.runCommand('joinstatus', 5, []);
+const streamingReply = streamingOnly.captured.client
+  .filter((event) => event.name === 'fk_spawn:client:notify').pop();
+check('/joinstatus explains a client that never started',
+  !!streamingReply && /still streaming resources/.test(streamingReply.args[0]),
+  streamingReply && streamingReply.args);
+
+check('the client announces itself on start',
+  /TriggerServerEvent\('fk_spawn:server:hello'\)/.test(
+    fs.readFileSync(path.join(ROOT, 'client', 'main.lua'), 'utf8')));
+
+// ---------------------------------------------------------------------------
 // report
 // ---------------------------------------------------------------------------
 

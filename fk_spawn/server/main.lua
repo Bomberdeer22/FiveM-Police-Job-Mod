@@ -11,6 +11,7 @@ local FILE = Config.Persistence.file or 'data/spawns.json'
 local overrides = {}      -- [name] = { x, y, z, w, label, updatedBy, updatedAt }
 local saveQueued = false
 local pendingSpawn = {}   -- [source] = true while a freshly joined player still owes a spawn
+local joins = {}          -- [source] = { name, connectedAt, joiningAt, helloAt, spawnedAt, warnedAt }
 
 -- ---------------------------------------------------------------------------
 -- Helpers
@@ -38,6 +39,18 @@ local function reply(target, message)
     else
         TriggerClientEvent('fk_spawn:client:notify', target, message)
     end
+end
+
+--- The join timeline. Everything here is console/chat output: a client stuck on
+--- the loading screen cannot open its F8 console, so the server has to say what
+--- is (not) happening.
+--- @return table entry
+local function joinEntry(source, name)
+    joins[source] = joins[source] or { connectedAt = os.time() }
+
+    if name then joins[source].name = name end
+
+    return joins[source]
 end
 
 -- ---------------------------------------------------------------------------
@@ -375,6 +388,14 @@ RegisterNetEvent('fk_spawn:server:spawned', function(name, x, y, z)
     -- never teleports someone who is already playing.
     pendingSpawn[source] = nil
 
+    local entry = joinEntry(source)
+    entry.spawnedAt = os.time()
+
+    if entry.connectedAt and (Config.Spawn.diagnostics or {}).enabled ~= false then
+        log(('player %d (%s) finished joining after %ds'):format(
+            source, GetPlayerName(source) or '?', entry.spawnedAt - entry.connectedAt))
+    end
+
     local player = Player(source)
     if player and player.state then
         player.state.fkSpawnPending = false
@@ -433,9 +454,18 @@ function pushJoinSpawn(source)
     end)
 end
 
+AddEventHandler('playerConnecting', function(name)
+    local source = source
+
+    joinEntry(source, name)
+end)
+
 AddEventHandler('playerJoining', function()
     local source = source
     pendingSpawn[source] = true
+
+    local entry = joinEntry(source)
+    entry.joiningAt = os.time()
 
     if Config.Debug then
         log(('player %d joined — spawn pending'):format(source))
@@ -452,6 +482,7 @@ end)
 
 AddEventHandler('playerDropped', function()
     pendingSpawn[source] = nil
+    joins[tonumber(source) or source] = nil
 end)
 
 --- The client asks on start instead of relying on state bag timing.
@@ -464,8 +495,148 @@ RegisterNetEvent('fk_spawn:server:isSpawnPending', function()
 end)
 
 -- ---------------------------------------------------------------------------
+-- Join diagnostics
+-- ---------------------------------------------------------------------------
+
+local function diagnostics()
+    return Config.Spawn.diagnostics or {}
+end
+
+--- The client's scripts are running: everything from here on is our code, not
+--- the game's resource streaming.
+RegisterNetEvent('fk_spawn:server:hello', function()
+    local source = source
+    local entry = joinEntry(source)
+
+    if entry.helloAt then return end
+
+    entry.helloAt = os.time()
+
+    if diagnostics().enabled == false then return end
+
+    local after = entry.helloAt - (entry.connectedAt or entry.helloAt)
+
+    log(('player %d (%s): client scripts are up after %ds'):format(
+        source, GetPlayerName(source) or '?', after))
+end)
+
+--- Human-readable state of one player's join.
+--- @return table { stage, connectedFor, ... }
+function GetJoinStatus(source)
+    local entry = joins[tonumber(source) or 0]
+
+    if not entry then return nil end
+
+    local now = os.time()
+
+    local stage = 'complete'
+
+    if not entry.spawnedAt then
+        stage = entry.helloAt and 'spawn_pending' or 'streaming'
+    end
+
+    return {
+        name = entry.name,
+        stage = stage,
+        connectedFor = now - (entry.connectedAt or now),
+        clientUp = entry.helloAt ~= nil,
+        spawned = entry.spawnedAt ~= nil,
+        spawnedAfter = entry.spawnedAt and entry.connectedAt
+            and (entry.spawnedAt - entry.connectedAt) or nil,
+    }
+end
+
+exports('GetJoinStatus', function(source)
+    return GetJoinStatus(source)
+end)
+
+--- Watch every join and say, in the console, what the client is waiting for.
+--- Re-armed with SetTimeout instead of looping, so a resource restart cannot
+--- leave a stack of watchers behind.
+local function checkJoins()
+    local ok, err = pcall(function()
+        if diagnostics().enabled == false then return end
+
+        local now = os.time()
+        local warnAfterClient = math.max(1, math.floor(tonumber(diagnostics().clientWarnAfter) or 15))
+        local warnAfterSpawn = math.max(1, math.floor(tonumber(diagnostics().spawnWarnAfter) or 20))
+        local repeatEvery = math.max(1, math.floor(tonumber(diagnostics().repeatEvery) or 15))
+
+        for _, id in ipairs(GetPlayers()) do
+            local source = tonumber(id)
+            local entry = source and joins[source]
+
+            if entry and not entry.spawnedAt and GetPlayerName(source) then
+                local sinceConnect = now - (entry.connectedAt or now)
+                local sinceHello = entry.helloAt and (now - entry.helloAt) or 0
+                local due = not entry.warnedAt or (now - entry.warnedAt) >= repeatEvery
+
+                if due and not entry.helloAt and sinceConnect >= warnAfterClient then
+                    entry.warnedAt = now
+                    warn(('player %d (%s) has been connected for %ds and its scripts have NOT '
+                        .. 'started - that PC is still streaming resources (a big pack), not '
+                        .. 'our spawn code.'):format(source, GetPlayerName(source) or '?', sinceConnect))
+                elseif due and entry.helloAt and sinceHello >= warnAfterSpawn then
+                    entry.warnedAt = now
+                    warn(('player %d (%s): client scripts are up but the spawn has not completed '
+                        .. 'after %ds - check /joinstatus.'):format(
+                            source, GetPlayerName(source) or '?', sinceHello))
+                end
+            end
+        end
+    end)
+
+    if not ok then
+        warn('join diagnostics failed: ' .. tostring(err))
+    end
+
+    SetTimeout(5000, checkJoins)
+end
+
+SetTimeout(5000, checkJoins)
+
+-- ---------------------------------------------------------------------------
 -- Commands
 -- ---------------------------------------------------------------------------
+
+--- /joinstatus [id] — where a join is stuck, in chat. Works without F8: a
+--- client on the loading screen can still be checked from the server console
+--- (`joinstatus <id>`) or by an admin in game.
+RegisterCommand('joinstatus', function(source, args)
+    local src = tonumber(source) or 0
+    local target = tonumber(type(args) == 'table' and args[1] or nil)
+
+    if not target then
+        if src < 1 then
+            return print('Usage: joinstatus <player id>')
+        end
+
+        target = src
+    end
+
+    if target ~= src and src > 0 and not IsSpawnStaff(src) then
+        return reply(src, 'You can only check your own join.')
+    end
+
+    local status = GetJoinStatus(target)
+
+    if not status then
+        return reply(source, ('Nothing is recorded for player %d.'):format(target))
+    end
+
+    if status.stage == 'streaming' then
+        return reply(source, ('Player %d: connected %ds ago and its client scripts have not started - '
+            .. 'that PC is still streaming resources. Nothing to fix on the server.'):format(
+                target, status.connectedFor))
+    end
+
+    if status.stage == 'spawn_pending' then
+        return reply(source, ('Player %d: client is up, spawn not confirmed after %ds - check the '
+            .. 'console for a spawn point error.'):format(target, status.connectedFor))
+    end
+
+    reply(source, ('Player %d: joined in %ds.'):format(target, status.spawnedAfter or status.connectedFor))
+end, false)
 
 -- /spawnlist — works in chat and in the console.
 RegisterCommand(Config.Commands.list or 'spawnlist', function(source)

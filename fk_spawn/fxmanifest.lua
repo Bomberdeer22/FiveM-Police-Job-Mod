@@ -5,7 +5,7 @@ lua54 'yes'
 name 'fk_spawn'
 author 'FiveM Police Job Mod'
 description 'Spawn manager: players wake up in Michael De Santa\'s bedroom. Staff can move the spawn point in game.'
-version '0.2.0'
+version '0.2.1'
 
 shared_scripts {
     'config.lua',

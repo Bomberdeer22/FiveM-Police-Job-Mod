@@ -336,6 +336,29 @@ needs no restart. `/spawn_reset michael_bedroom` from the console undoes it.
 | `Config.Staff.ace` | `'fk_spawn.staff'` | Fallback staff check when `fk_economy` is not running |
 | `Config.Persistence.file` | `data/spawns.json` | Where in-game `/spawnset` positions are saved |
 
+### Is my client stuck, and where?
+
+A player whose FiveM sits on **100%** has not run a single line of this resource — the PC
+is still downloading/streaming assets. The server can see the difference, so it says so in
+the console, which is the one place that works when the client's F8 is unreachable:
+
+```
+[fk_spawn] player 4 (Player4): client scripts are up after 22s
+[fk_spawn] player 4 (Player4) finished joining after 24s
+```
+
+If the first line never appears, the client never got that far:
+
+```
+[fk_spawn] player 4 (Player4) has been connected for 45s and its scripts have NOT started
+           - that PC is still streaming resources (a big pack), not our spawn code.
+```
+
+`/joinstatus` prints the same thing in chat (console: `joinstatus <id>`), and
+`exports.fk_spawn:GetJoinStatus(source)` returns `{ stage = 'streaming' | 'spawn_pending' |
+'complete', connectedFor, clientUp, spawned, spawnedAfter }`. Tuning lives in
+`Config.Spawn.diagnostics` (`clientWarnAfter`, `spawnWarnAfter`, `repeatEvery`).
+
 ### How the spawn actually works
 
 1. The server flags the player on `playerJoining` (so **restarting the resource never
@@ -563,8 +586,16 @@ Config.Deferred = {
 }
 ```
 
-The server boots, the HTTP endpoint comes up, players can connect — and then the pack is
-started in the background without the boot clock running.
+The server boots, the HTTP endpoint comes up — and then the pack is started in the
+background without the boot clock running.
+
+**Nobody joins halfway through it.** While the packs are starting, new connections are held
+with a *deferral*: the loading screen shows `fk_boot: starting military (12s)...` and the
+player is let in the moment the pack is up. This matters because a client that connects
+mid-download can sit at **100% for ever** — it is fetching files from a resource that is
+still being set up. If a pack never finishes, the gate gives up after
+`Config.Deferred.gateTimeout` (300 s) and lets the player in with an explanation instead
+of locking everyone out. Set `gateJoins = false` to switch that off.
 
 | What | Where |
 | --- | --- |
@@ -672,7 +703,7 @@ Consumables, services and vehicles are *not* stored (they are used at the till);
 
 `.github/workflows/tests.yml` runs `npm run check` on every push and pull request: it
 compiles all 25 Lua files with fengari (`tools/lint-lua.js`), then runs the five test
-suites (410 checks) against a real Lua VM and jsdom.
+suites (430 checks) against a real Lua VM and jsdom.
 
 ---
 
@@ -699,7 +730,7 @@ with mocked FiveM natives, and the NUI page runs in jsdom.
 
 ```bash
 npm install
-npm run check   # lint every Lua file + all 410 checks
+npm run check   # lint every Lua file + all 430 checks
 ```
 
 * **123 economy checks** — starting balances, overdraft refusal, invalid
@@ -717,10 +748,13 @@ npm run check   # lint every Lua file + all 410 checks
 * **33 UI checks** — money formatting, HUD rendering, menu/tab flow, drag mode,
   preset saving, staff selection, give/take confirmation, toasts, price list,
   delta pills, hidden-HUD behaviour.
-* **33 fk_boot checks** — the deferred pack list, nothing starting before the delay,
+* **45 fk_boot checks** — the deferred pack list, nothing starting before the delay,
   packs starting in order and once only, a pack that is already running or still starting
   being left alone, a misspelled or uninstalled pack being reported instead of started, a
-  refused `StartResource`, the three exports, and both console commands.
+  refused `StartResource`, the three exports, both console commands, and the **join gate**
+  (a connection during the start is held and told which pack it is waiting for, is let in
+  when the packs are up, is not held afterwards, is not held at all with `gateJoins = false`
+  or with nothing deferred, and is released with an explanation if the pack never starts).
 * **14 preview checks** — the `preview/` harness boots and drives the same UI.
 * **152 house checks** — the six spots and their types, coordinates checked against
   the game's own interior data (each spot must land in its room and on its floor),
@@ -734,19 +768,22 @@ npm run check   # lint every Lua file + all 410 checks
   of several; a corrupt file plus corrupt backup still recovers; `onResourceStop` flushes
   the garage and ignores another resource stopping), and the NUI card in jsdom (rows,
   hints, show/hide, Lua messages).
-* **55 spawn checks** — the bedroom point and its interior, name lookup (case/space
+* **63 spawn checks** — the bedroom point and its interior, name lookup (case/space
   insensitive), coordinate parsing from strings and tables, bounds/NaN rejection,
   save/load of `spawns.json`, `spawn_set` / `spawn_reset` / `spawnlist`, the staff
   gate on `/spawnset`, permission on `/spawn`, the join handshake (a flagged
   player must spawn, an existing player must not), the server-side push loop that
   keeps offering the spawn until the client confirms, the startup banner, the
   `playerSpawned` event for other resources, client re-sync, the spawn **rate
-  limit**, the `spawns.json` backup, and the anti-spawnkill protection settings.
+  limit**, the `spawns.json` backup, the anti-spawnkill protection settings, and the
+  **join timeline** (streaming → `spawn_pending` → `complete`, the console lines, and
+  `/joinstatus` in both states).
 
 ## Troubleshooting
 
 | Symptom | Cause / fix |
 | --- | --- |
+| **FiveM sits at 100% on the loading screen** | At 100% the client has finished asking for resources and is still streaming them — our scripts have not run yet. Check **which** side is stuck: the server console prints `client scripts are up after Ns` when the client gets in. If that line never appears (or the console warns that the scripts have NOT started), the pack is the problem, not the spawn: it is too big for the client to stream in reasonable time, it has duplicate model names, or a `.yft`/`.ytd` in it is corrupt. Test with the pack removed — if it loads, bisect the pack's `stream/` folder. If the line *does* appear but the join never completes, the console says `client scripts are up but the spawn has not completed` and `/joinstatus` shows the stage — that is ours, and the spawn point is the first thing to check. Also make sure **the pack is not being restarted while you are connecting**: `fk_boot` holds connections until its packs are up for exactly this reason. |
 | **`Resource "fk_house" failed to start within the 1m30s time limit` (txAdmin restarts the server)** | txAdmin names the last resource it was told about, not the slow one: a heavy pack that blocks the boot never reports itself. Look at the last `Starting resource …` line in the console — that is the one. Either raise **Settings → FXServer → Show Advanced → Resource Starting Tolerance**, or move the pack to [`fk_boot`](#fk_boot) and remove it from `server.cfg`. The `fk_house` line right before it (`N saved vehicle(s) loaded`) proves fk_house started in the same second it was asked to. |
 | **Black (or white) box behind the HUD or menu** | The page must render over the game with no background. `html, body` are forced transparent, and **`backdrop-filter` must not be used** — FiveM's CEF does not support it and paints a hard black rectangle behind the element. If you add custom CSS, avoid `backdrop-filter`, `filter` and `mix-blend-mode`. |
 | **Console: `attempt to call a nil value (global 'StaffCount')` / `'StaffRosterIsEmpty'` / `'IsStaff'`** | Your deployed copy is out of date: `server/staff.lua` is not being loaded. Re-copy the **whole** `fk_economy` folder (the file *and* `fxmanifest.lua`, which must list `server/staff.lua` before `server/main.lua`) and `restart fk_economy`. From v0.2.0 the resource prints a red `server/staff.lua was not loaded!` banner instead of crashing. |

@@ -99,6 +99,21 @@ Config.Spawn = {
         enabled = true,
         seconds = 5,
     },
+
+    -- Join diagnostics. A player whose client sits on "100%" for ever is still
+    -- streaming resources from the server; the server can see that its scripts
+    -- never started and says so in the console, which is the only trace that
+    -- does not need the client's F8 console.
+    diagnostics = {
+        enabled = true,
+        -- Warn when the client has not started its scripts this long after it
+        -- connected (the PC is still loading resources).
+        clientWarnAfter = 15,
+        -- Warn when the client is up but the spawn has not happened after this.
+        spawnWarnAfter = 20,
+        -- Do not repeat the same warning more often than this, in seconds.
+        repeatEvery = 15,
+    },
 }
 
 -- ---------------------------------------------------------------------------

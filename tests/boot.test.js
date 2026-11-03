@@ -25,6 +25,13 @@ function check(name, ok, detail) {
 // twice. Everything lives in Lua so `Wait` can yield.
 const PRELUDE = `
 fkThreads = {}
+fkHandlers = {}
+fkDeferrals = {}
+fkClock = 1700000000
+
+-- A fake clock, so the join gate's timeout can be tested without waiting.
+os.time = function() return fkClock end
+function fkTick(seconds) fkClock = fkClock + (seconds or 1) end
 
 function CreateThread(fn)
     fkThreads[#fkThreads + 1] = coroutine.create(fn)
@@ -32,6 +39,57 @@ end
 
 function Wait(ms)
     coroutine.yield(ms or 0)
+end
+
+function AddEventHandler(name, fn)
+    fkHandlers[name] = fn
+end
+
+--- Fire a server event that FiveM would run in its own thread, with \`source\`.
+function fkFireAs(src, name, ...)
+    local fn = fkHandlers[name]
+
+    if not fn then return false end
+
+    local args = table.pack(...)
+    local co = coroutine.create(function()
+        source = src
+        fn(table.unpack(args, 1, args.n))
+    end)
+
+    fkThreads[#fkThreads + 1] = co
+
+    local ok, err = coroutine.resume(co)
+
+    if not ok then error(err) end
+
+    return true
+end
+
+--- A stand-in for FiveM's deferrals object.
+function fkNewDeferrals()
+    local d = {}
+    d.calls = {}
+
+    function d.defer()
+        d.calls[#d.calls + 1] = { 'defer' }
+    end
+
+    function d.update(message)
+        d.calls[#d.calls + 1] = { 'update', tostring(message) }
+    end
+
+    function d.done(message)
+        d.calls[#d.calls + 1] = { 'done', message ~= nil and tostring(message) or nil }
+    end
+
+    function d.presentCard()
+        d.calls[#d.calls + 1] = { 'card' }
+    end
+
+    fkDeferrals[#fkDeferrals + 1] = d
+
+    return d, #fkDeferrals
 end
 
 function fkStep()
@@ -265,6 +323,15 @@ function createHarness(options = {}) {
       if (options.enabled === false) {
         luaDo('Config.Deferred.enabled = false', '@test-enabled');
       }
+      if (options.gateJoins === false) {
+        luaDo('Config.Deferred.gateJoins = false', '@test-gate');
+      }
+      if (options.gateTimeout !== undefined) {
+        luaDo(`Config.Deferred.gateTimeout = ${Number(options.gateTimeout)}`, '@test-gate-timeout');
+      }
+      if (options.gap !== undefined) {
+        luaDo(`Config.Deferred.gap = ${Number(options.gap)}`, '@test-gap');
+      }
     }
   });
 
@@ -291,6 +358,21 @@ function createHarness(options = {}) {
     config() {
       return luaDo('return Config.Deferred', '@test-config');
     },
+    /** Create a deferrals stand-in; returns its 1-based index. */
+    newDeferrals() {
+      return luaDo('local _, index = fkNewDeferrals(); return index', '@test-deferrals');
+    },
+    deferralCalls(index) {
+      const value = luaDo(`return fkDeferrals[${index}].calls`, '@test-deferral-calls') || {};
+      if (Array.isArray(value)) return value;
+      return Object.keys(value)
+        .filter((key) => /^\d+$/.test(key))
+        .sort((a, b) => Number(a) - Number(b))
+        .map((key) => value[key]);
+    },
+    tick(seconds) {
+      return luaDo(`fkTick(${Number(seconds)})`, '@test-tick');
+    },
   };
 }
 
@@ -306,6 +388,8 @@ check('the pack list is a table by default', config.packs !== null && typeof con
 check('the delay is in milliseconds and generous', config.delay === 10000, config.delay);
 check('packs are spaced out', config.gap === 2000, config.gap);
 check('already-running packs are left alone by default', config.skipIfStarted === true);
+check('joins are gated while packs start', config.gateJoins === true);
+check('the gate has a timeout', config.gateTimeout === 300);
 check('an empty config creates no packs to start',
   (() => {
     const list = defaults.callExport('GetDeferredPacks')[0] || {};
@@ -413,6 +497,72 @@ commands.runCommand('boot_list', 1, []);
 check('boot_list answers an admin in chat',
   commands.clientEvents.some((event) => event.target === 1 && /military: stopped/.test(event.args.args[1])),
   commands.clientEvents);
+
+// ---------------------------------------------------------------------------
+// The join gate: nobody connects halfway through a pack download
+// ---------------------------------------------------------------------------
+
+function connect(harness, source, name) {
+  const index = harness.newDeferrals();
+  harness.luaDo(
+    `return fkFireAs(${source}, 'playerConnecting', ${JSON.stringify(name)}, nil, fkDeferrals[${index}])`,
+    '@test-connect');
+  return index;
+}
+
+const gate = createHarness({ packs: ['military'] });
+gate.step();
+
+const held = connect(gate, 7, 'Bob');
+const heldCalls = gate.deferralCalls(held) || [];
+check('a connection while the pack is starting is held', heldCalls.some((call) => call[0] === 'defer'), heldCalls);
+check('and is not let in yet', !heldCalls.some((call) => call[0] === 'done'), heldCalls);
+
+gate.step();
+const heldUpdate = (gate.deferralCalls(held) || []).filter((call) => call[0] === 'update');
+check('the loading screen says which pack it is waiting for',
+  heldUpdate.some((call) => /fk_boot: starting military/.test(call[1] || '')), heldUpdate);
+check('the console notes the held connection',
+  gate.logs.some((line) => /Bob is connecting while the packs are still starting/.test(line)), gate.logs);
+
+for (let i = 0; i < 6; i += 1) gate.step();
+
+const doneCalls = (gate.deferralCalls(held) || []).filter((call) => call[0] === 'done');
+check('the player is let in once the pack is up', doneCalls.length === 1 && doneCalls[0].length === 1, doneCalls);
+check('the console says the gate opened',
+  gate.logs.some((line) => /join gate open - let 1 waiting player\(s\) in/.test(line)), gate.logs);
+
+const late = connect(gate, 8, 'Late');
+check('a connection after boot is not held',
+  !(gate.deferralCalls(late) || []).some((call) => call[0] === 'defer'),
+  gate.deferralCalls(late));
+
+// A gate that would hang for ever must give the player an explanation instead.
+const stuck = createHarness({ packs: ['military', 'packB', 'packC'], gateTimeout: 10 });
+stuck.step();
+const waiting = connect(stuck, 9, 'Patient');
+stuck.step();
+stuck.tick(400);
+stuck.step();
+const stuckCalls = (stuck.deferralCalls(waiting) || []).filter((call) => call[0] === 'done');
+check('a pack that never finishes does not lock everyone out',
+  stuckCalls.length === 1 && /could not start .* in time/.test(stuckCalls[0][1] || ''), stuckCalls);
+
+// Opt out.
+const open = createHarness({ packs: ['military'], gateJoins: false });
+open.step();
+const direct = connect(open, 10, 'Direct');
+check('gateJoins = false lets everyone straight in',
+  !(open.deferralCalls(direct) || []).some((call) => call[0] === 'defer'),
+  open.deferralCalls(direct));
+
+// Nothing deferred: nothing to wait for.
+const nothing = createHarness();
+nothing.step();
+const plain = connect(nothing, 11, 'Plain');
+check('with no packs configured nobody is held',
+  !(nothing.deferralCalls(plain) || []).some((call) => call[0] === 'defer'),
+  nothing.deferralCalls(plain));
 
 // ---------------------------------------------------------------------------
 // Switched off
