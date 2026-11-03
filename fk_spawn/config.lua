@@ -11,6 +11,11 @@ Config = {}
 
 Config.Debug = false
 
+-- One player on this server: the join diagnostics warn once instead of
+-- repeating every Config.Spawn.diagnostics.repeatEvery seconds, because there is
+-- only ever one client to watch.
+Config.Singleplayer = true
+
 -- ---------------------------------------------------------------------------
 -- Spawn points
 -- ---------------------------------------------------------------------------

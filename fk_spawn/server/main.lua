@@ -569,7 +569,11 @@ local function checkJoins()
             if entry and not entry.spawnedAt and GetPlayerName(source) then
                 local sinceConnect = now - (entry.connectedAt or now)
                 local sinceHello = entry.helloAt and (now - entry.helloAt) or 0
-                local due = not entry.warnedAt or (now - entry.warnedAt) >= repeatEvery
+                -- Single player: say it once. With one client there is no one
+                -- else to compare against, so a repeating warning is just noise
+                -- in the console of the person who already knows.
+                local due = not entry.warnedAt
+                    or (not Config.Singleplayer and (now - entry.warnedAt) >= repeatEvery)
 
                 if due and not entry.helloAt and sinceConnect >= warnAfterClient then
                     entry.warnedAt = now

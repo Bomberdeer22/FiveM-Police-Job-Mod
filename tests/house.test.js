@@ -28,7 +28,7 @@ function createHarness(options = {}) {
   const L = lauxlib.luaL_newstate();
   lualib.luaL_openlibs(L);
 
-  const captured = { client: [], server: [], logs: [], threads: [] };
+  const captured = { client: [], server: [], logs: [], threads: [], waits: [] };
   const filesystem = options.files || {};
   const staffIds = new Set(options.staff || []);
   const handlers = {};
@@ -193,6 +193,7 @@ function createHarness(options = {}) {
   // thread (the garage watchdog) is stopped instead of hanging the test run.
   setGlobal('Wait', () => {
     waitCalls += 1;
+    captured.waits.push(lua.lua_tonumber(L, 1));
 
     if (waitCalls > 400) {
       lua.lua_pushstring(L, to_luastring('thread stopped by the test harness'));
@@ -648,6 +649,13 @@ check('the data folder exists (SaveResourceFile cannot create it)',
 
 const h = createHarness();
 h.runThreads(); // boot thread
+
+// --- single player ---------------------------------------------------------
+check('the house is single-player by default', luaReadGlobal('Config.Singleplayer') === true);
+check('the garage watchdog is capped to 5 s on a single-player server',
+  h.captured.waits.includes(5000) && !h.captured.waits.includes(15000), h.captured.waits.slice(0, 10));
+check('the multiplayer watchdog cadence is still configurable',
+  luaReadGlobal('Config.Garage.watchdog') === 15000, luaReadGlobal('Config.Garage.watchdog'));
 
 const [spots] = h.callExport('GetSpots');
 check('six interaction spots are configured', Array.isArray(spots) && spots.length === 6, spots && spots.length);

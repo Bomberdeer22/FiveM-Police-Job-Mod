@@ -17,6 +17,16 @@
 Config = {}
 
 -- ---------------------------------------------------------------------------
+-- 0. SINGLE-PLAYER
+-- ---------------------------------------------------------------------------
+-- This server has exactly one player on it, so the machinery that only exists
+-- to keep players from flooding each other is switched off:
+--   * net-event rate limits (Config.RateLimit)  -> skipped when this is true
+--   * staff menu player list                    -> still works, it is one row
+-- The money itself is still server-authoritative; this only removes throttles.
+Config.Singleplayer = true
+
+-- ---------------------------------------------------------------------------
 -- 1. CURRENCY
 -- ---------------------------------------------------------------------------
 Config.Locale = 'en-GB'
@@ -264,6 +274,8 @@ Config.Log = {}
 --     `rate` events per second, with a short `burst` allowed on top.
 --     A blocked request is dropped silently and counted in /econstatus.
 -- ---------------------------------------------------------------------------
+-- Ignored while Config.Singleplayer is true (the only client cannot flood you
+-- in any way that matters). Set Singleplayer = false to use them again.
 Config.RateLimit = {
     -- Client asking for its own HUD state (fires on spawn + menu open)
     requestState   = { rate = 2, burst = 20 },

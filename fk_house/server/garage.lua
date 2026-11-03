@@ -634,9 +634,15 @@ end)
 -- If the entity ever disappears (engine cleanup, a bad stream, someone calling
 -- DeleteEntity on it) it is recreated in the garage a few seconds later. While
 -- the player is online the car is never simply gone.
+-- How often the watchdog checks. Config.Garage.watchdog is the multiplayer
+-- cadence; a single-player server caps it so a culled car returns in seconds.
+local watchdogMs = math.max(1000, tonumber(garageConfig().watchdog) or 15000)
+
+if Config.Singleplayer then watchdogMs = math.min(watchdogMs, 5000) end
+
 CreateThread(function()
     while true do
-        Wait(15000)
+        Wait(watchdogMs)
 
         if garageEnabled() and garageConfig().respawn ~= false then
             local now = os.time()

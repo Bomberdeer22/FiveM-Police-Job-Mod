@@ -13,6 +13,11 @@ Config = {}
 
 Config.Debug = false
 
+-- One player on this server. The only thing it changes here is the garage
+-- watchdog: with nobody else to stream the interior for, a culled car is
+-- restored quickly instead of on the 15 s multiplayer cadence.
+Config.Singleplayer = true
+
 -- ---------------------------------------------------------------------------
 -- Where the house is (interactions only work inside this radius)
 -- ---------------------------------------------------------------------------
@@ -168,6 +173,9 @@ Config.Garage = {
     -- Re-create the entity if it ever disappears while the player is online.
     respawn = true,
     respawnDelay = 5000,
+    -- How often the watchdog looks for a missing car. Single-player caps this
+    -- at 5 s (see Config.Singleplayer) so the car is back almost immediately.
+    watchdog = 15000,
 
     -- Michael's garage door. Turn this off if another resource drives it.
     door = {

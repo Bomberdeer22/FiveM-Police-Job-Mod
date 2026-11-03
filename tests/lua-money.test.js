@@ -831,7 +831,18 @@ const [recoveredItems] = recovered.callExport('GetItems', 1);
 check('items come back from the backup too', recoveredItems.radio === 2, recoveredItems);
 
 // -- rate limiting ----------------------------------------------------------
-const flood = createHarness({ players });
+// The mod now ships Config.Singleplayer = true (no throttles for a one-player
+// server), so the limiter itself is exercised with that switched back off.
+const limited = 'Config.Singleplayer = false';
+
+const single = createHarness({ players });
+for (let i = 0; i < 60; i += 1) {
+  single.fireNet('fk_economy:server:staffAction', 3, { mode: 'add', account: 'cash', amount: 1, target: 1 });
+}
+const singleAnswered = single.captured.client.filter((event) => event.name === 'fk_economy:client:staffResult').length;
+check('single-player skips the rate limits', singleAnswered === 60, singleAnswered);
+
+const flood = createHarness({ players, overrides: limited });
 for (let i = 0; i < 60; i += 1) {
   flood.fireNet('fk_economy:server:staffAction', 3, { mode: 'add', account: 'cash', amount: 1, target: 1 });
 }
@@ -844,7 +855,7 @@ flood.fireNet('fk_economy:server:staffAction', 3, { mode: 'add', account: 'cash'
 check('the limiter refills over time',
   flood.captured.client.some((event) => event.name === 'fk_economy:client:staffResult'));
 
-const floodState = createHarness({ players });
+const floodState = createHarness({ players, overrides: limited });
 for (let i = 0; i < 40; i += 1) floodState.fireNet('fk_economy:server:requestState', 1);
 check('state requests are rate limited too',
   floodState.captured.client.filter((event) => event.name === 'fk_economy:client:state').length <= 20,

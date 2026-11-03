@@ -2,17 +2,143 @@
 
 A police job mod for FiveM (GTA V / GTA V Enhanced), in the spirit of LSPDFR Advanced.
 
-**Current status:** the economic foundation — everything the main mod will later need to
-move money around — the spawn manager, and Michael's house as a place you can actually
-live in are built and tested.
+**Current status:** the police job itself (duty, MDT, dispatch, stops, citations,
+arrests, jail, backup, ranks) sits on top of the economic foundation, the spawn manager
+and Michael's house — all five resources are built and tested, and the whole thing is
+tuned for a **single-player server**.
 
 ```
+fk_police/           <- the police job: LSPDFR-style MDT, dispatch, stops, citations, arrests, backup, ranks
 fk_economy/          <- the economy resource (the money dependency)
 fk_spawn/            <- spawn manager: players wake up in Michael's bedroom
 fk_house/            <- Michael's mansion: wardrobe, kitchen, shower, bed, living room, garage
 fk_boot/             <- starts heavy packs (vehicle/map) after boot, so txAdmin stops killing the server
 preview/             <- dev-only browser preview of the UI (not shipped to the server)
 ```
+
+---
+
+## fk_police
+
+The police job. It takes LSPDFR's systems — duty, locker, police computer, traffic
+stops, citations, arrests, dispatch callouts, backup, rank progression — and implements
+them natively, because LSPDFR runs on RAGE Plugin Hook and single-player GTA V and
+cannot be installed on a FiveM server. The full feature-by-feature mapping, key table
+and behaviour differences are in [`docs/LSPDFR.md`](docs/LSPDFR.md).
+
+### What it does
+
+| Feature | Detail |
+| --- | --- |
+| **Duty & station** | Mission Row marker (**E**) offers duty, locker, armoury, garage, computer and jail. Going on duty puts the uniform on; going off duty puts your own clothes back |
+| **MDT** | Five-tab NUI page (**F9**, or **E** in a police car): **People**, **Vehicles**, **Calls**, **Charges**, **Backup**. Name and plate lookups return licence/registration/insurance state, stolen flags and warrants |
+| **Traffic stops** | **F10** (or `/stop`) stops the car in front, reports the plate, owner and every flag, and holds the driver for `Config.Traffic.waitSeconds` |
+| **Citations** | `/cite` (**F6**) picks from `Config.Charges`, sums the fine and jail time, files a citation and pays the officer |
+| **Arrests & jail** | `/arrest` (**F7**) cuffs and books the suspect, clears the warrant, and holds them in a cell for the sentence (capped at `Config.Jail.maxSeconds`) |
+| **Dispatch** | Server-side dispatch issues weighted callouts (`Config.Callouts`) with a radio code, a scene 120–550 m away and an accept window; **Y** accepts, **X** forces one |
+| **Backup** | Code 2/3, air support, K9, SWAT, EMS and fire (**G**, or the MDT *Backup* tab); units spawn nearby and drive to you |
+| **Ranks & pay** | XP from callouts, citations and arrests; `Config.Ranks` sets thresholds and salary, `Config.Pay` sets fees and the officer's share of each fine |
+| **Records** | `fk_police/data/records.json` — people, vehicles, citations, arrests and officer progression, crash-safe (`.bak` + snapshots) |
+
+### Install
+
+1. Copy all five folders into your `resources` directory.
+2. `server.cfg`:
+
+   ```cfg
+   ensure fk_economy     # money (fk_police pays into it)
+   ensure fk_spawn
+   ensure fk_house
+   ensure fk_police
+   ensure fk_boot
+   ```
+
+`fk_police/fxmanifest.lua` declares `dependencies { 'fk_economy' }`, so the server will
+refuse to start the job before the economy is up.
+
+### Keys
+
+| Key | Action |
+| --- | --- |
+| **E** | Interact (station services, callout scene, MDT in a police car) |
+| **M** | Police menu (`/pd`) |
+| **G** | Backup menu |
+| **F9** | MDT |
+| **F10** | Traffic stop the vehicle in front |
+| **F11** | Go on/off duty |
+| **Y** | Accept the current callout |
+| **X** | Force a callout |
+| **F6** / **F7** | Cite / arrest the current stop |
+
+Every key is a `RegisterKeyMapping`, so it can be rebound in *Settings → Key bindings →
+FiveM*. The commands behind them (`/duty`, `/stop`, `/cite`, `/arrest`, `/backup`,
+`/callout`, `/pd status`) work without the keys.
+
+### Commands
+
+| Command | What it does |
+| --- | --- |
+| `/pd` | Police menu (also `/pd locker`, `/pd armoury`, `/pd garage <model>`, `/pd charges`) |
+| `/duty` | On/off duty |
+| `/stop` | Traffic stop the vehicle in front |
+| `/cite <charge> ...` | Cite the current stop |
+| `/arrest <charge> ...` | Arrest the current stop |
+| `/callout` | Accept the current callout (same as **Y**) |
+| `/callout_force` | Dispatch a callout now (single player convenience) |
+| `/backup <code2\|code3\|air\|k9\|swat\|ems\|fire>` | Request backup |
+| `/pdstatus` | Console/chat: officers tracked, on-duty count, the active callout |
+| `/pdxp <id> <amount>` | Console only: commend a player (testing/progression) |
+
+### Server API
+
+```lua
+exports.fk_police:GetStatus(src)       -- { onDuty, rank, xp, citations, arrests, callsign, ... }
+exports.fk_police:IsOnDuty(src)        -- boolean
+exports.fk_police:SetDuty(src, true)   -- same as /duty
+exports.fk_police:GetRecords()         -- { people, vehicles, citations, arrests }
+exports.fk_police:Search(src, 'vehicle', 'MARCUS1')
+exports.fk_police:StartStop(src, plate, model)
+exports.fk_police:Cite(src, { 'speeding' })
+exports.fk_police:Arrest(src, { 'assault' })
+exports.fk_police:ResolveCallout(src, coords)
+exports.fk_police:RequestBackup(src, 'code3')
+```
+
+Every export validates the caller the same way the net events do — they are for other
+resources on this server, not a way around the checks.
+
+### Configuration
+
+`fk_police/config.lua`, in the order you will want to touch it:
+
+| Key | What it decides |
+| --- | --- |
+| `Config.Singleplayer` | No rate limits, one callout at a time (default `true`) |
+| `Config.Stations` | Station coords, services, garage/jail spots |
+| `Config.Uniform`, `Config.Loadout` | Duty uniform components and the armoury loadout |
+| `Config.Vehicles` | What the police garage will spawn |
+| `Config.Ranks`, `Config.Pay` | XP thresholds, salary, fees and the officer's fine share |
+| `Config.Dispatch`, `Config.Callouts` | Callout timing, distance, expiry, weights, XP and charges |
+| `Config.Charges` | Every charge id, fine, jail seconds and type |
+| `Config.Traffic`, `Config.Jail`, `Config.Backup` | Stop distance, sentence cap and cell, backup units |
+| `Config.Records`, `Config.Seed` | Record file, retention and the starter population |
+| `Config.Keys`, `Config.Commands` | Key codes and command names |
+
+### Data file
+
+| File | Contents |
+| --- | --- |
+| `data/records.json` | `people`, `vehicles`, `citations`, `arrests`, `officers` (XP, citations, arrests, callsign) |
+
+Written through the same `Persist` helper as the other resources: `.bak.json` fallback
+and rotating snapshots, so a killed server cannot lose the record store.
+
+### Single-player
+
+The police job assumes it is the only officer on the server: one dispatch board, one
+active callout, no staff queue, no shared callout claims and no rate limits
+(`Config.Singleplayer = true`). Nothing about authority changes — the server still
+prices every charge, writes every record and moves every dollar through `fk_economy`.
 
 ---
 
@@ -610,9 +736,9 @@ If you would rather keep `ensure military` in `server.cfg`, raise txAdmin's limi
 
 ---
 
-## Hardening (all three resources)
+## Hardening (all five resources)
 
-The three resources share the same small `shared/core.lua` (an identical copy in each,
+The resources share the same small `shared/core.lua` (an identical copy in each,
 because FiveM resources are separate Lua states). It gives every write and every net
 event the same protection.
 
@@ -640,8 +766,23 @@ dropped and counted.
 | `fk_economy` | `requestState`, `requestPlayers`, `staffAction`, purchases |
 | `fk_house` | `requestSpots`, `setSpot`, `resetSpot`, `requestOutfits`, `saveOutfit`, `buy`, all four garage events |
 | `fk_spawn` | `requestSpawns`, `requestSpawn`, `setSpawn`, `resetSpawn`, `isSpawnPending` |
+| `fk_police` | `search`, `stop`, `cite`, `arrest`, `backup`, callout accept/decline/resolve (off entirely while `Config.Singleplayer = true`) |
 
 Blocked requests are counted: `/econstatus` (staff) and `/housestatus` show the totals.
+
+### Single player
+
+This server has one player on it, so each resource has `Config.Singleplayer = true` at
+the top of its config. What it changes:
+
+| Resource | Effect |
+| --- | --- |
+| `fk_economy` | Net-event rate limits are skipped (`Config.RateLimit` is only used when this is `false`) |
+| `fk_police` | No rate limits, one callout at a time on the dispatch board |
+| `fk_house` | The garage watchdog polls every 5 s instead of 15 s, so a culled car comes back immediately |
+| `fk_spawn` | Join diagnostics warn once instead of repeating every 15 s |
+
+It never changes who is authoritative: money, records and XP are still server-side.
 
 ### `SetMoney` is gated
 
@@ -772,10 +913,10 @@ with mocked FiveM natives, and the NUI page runs in jsdom.
 
 ```bash
 npm install
-npm run check   # lint every Lua file + all 454 checks
+npm run check   # lint every Lua file + all 557 checks
 ```
 
-* **123 economy checks** — starting balances, overdraft refusal, invalid
+* **124 economy checks** — starting balances, overdraft refusal, invalid
   amounts/accounts/targets, purchase pricing, per-action caps, non-staff rejection,
   player-list permissions, chat/console commands, **staff roster** (claim, add,
   remove, last-member protection, persistence across a restart, JSON shape),
@@ -802,7 +943,7 @@ npm run check   # lint every Lua file + all 454 checks
   two resources; plus the CLI (`--json`, `--duplicates-only`, a clean pack exiting 0, a bad
   pack exiting 1, usage and missing folder).
 * **14 preview checks** — the `preview/` harness boots and drives the same UI.
-* **152 house checks** — the six spots and their types, coordinates checked against
+* **155 house checks** — the six spots and their types, coordinates checked against
   the game's own interior data (each spot must land in its room and on its floor),
   floor-aware nearest-spot lookup, 3D distance, spot validation, `/housespot` / `house_spot` / `house_reset`, staff gating,
   `spots.json` persistence across a restart, outfit validation and per-licence storage,
@@ -814,7 +955,7 @@ npm run check   # lint every Lua file + all 454 checks
   of several; a corrupt file plus corrupt backup still recovers; `onResourceStop` flushes
   the garage and ignores another resource stopping), and the NUI card in jsdom (rows,
   hints, show/hide, Lua messages).
-* **63 spawn checks** — the bedroom point and its interior, name lookup (case/space
+* **66 spawn checks** — the bedroom point and its interior, name lookup (case/space
   insensitive), coordinate parsing from strings and tables, bounds/NaN rejection,
   save/load of `spawns.json`, `spawn_set` / `spawn_reset` / `spawnlist`, the staff
   gate on `/spawnset`, permission on `/spawn`, the join handshake (a flagged
@@ -823,7 +964,21 @@ npm run check   # lint every Lua file + all 454 checks
   `playerSpawned` event for other resources, client re-sync, the spawn **rate
   limit**, the `spawns.json` backup, the anti-spawnkill protection settings, and the
   **join timeline** (streaming → `spawn_pending` → `complete`, the console lines, and
-  `/joinstatus` in both states).
+  `/joinstatus` in both states), and the single-player warning (printed once instead of
+  every 15 s).
+* **96 fk_police checks** — plate/name normalisation, person and vehicle records, flags and
+  warrants, sentence maths (unknown charges ignored, duplicates counted once), ranks and
+  callout weights; then the real server: seeding, duty and statebags, searches (on/off
+  duty, unknown plates and kinds), traffic stops, citations (fine ✓, fee + fine share paid
+  through `fk_economy`, XP, records, a refused unknown charge), arrests (fine, jail, warrant
+  cleared, stop cleared), dispatch (a callout issued while on duty, too far to resolve,
+  resolved at the scene for XP and pay, forced and declined), backup (units, unknown kind),
+  locker/armoury/garage, the console commands, 40 searches in a row with no rate limiting,
+  and persistence (XP, warrants and citations all survive a restart); plus the MDT page in
+  jsdom (hidden by default, header/rank/duty pill, charges table, vehicle results with bad
+  flags, "no record", callout card with accept/decline, closing), and the static checks
+  the VM cannot make (key mappings, the four NUI callbacks, the stop being dropped on
+  arrest, no hardcoded localhost in the page, no `backdrop-filter`).
 
 ## Troubleshooting
 
@@ -857,12 +1012,17 @@ npm run check   # lint every Lua file + all 454 checks
 
 ## Roadmap
 
-The main police mod will build on this resource:
+Built and tested: the economy, the spawn manager, Michael's house, the deferred-pack
+loader and the police job itself. Still open:
 
-1. Items/equipment purchases (using `Config.Items` prices + `TryPurchase`).
-2. Shift payouts and fines (using `AddMoney` / `RemoveMoney` with reasons, so the
-   audit log stays useful).
-3. Vehicle purchases/impound fees.
-4. Department budgets (a shared account on top of the same store).
+1. Items/equipment purchases (using `Config.Items` prices + `TryPurchase`) for the
+   police locker.
+2. Shift payouts on a timer (the rank salary is in `Config.Ranks`, the job currently
+   pays per callout/citation/arrest).
+3. Impound fees and vehicle purchases — the garage and the records store are the hooks.
+4. A court/verdict layer on top of `Config.Charges` (`type` already separates infractions,
+   misdemeanors and felonies).
+5. Pursuit AI and roadblocks/spike strips (see the "behaviour differences" table in
+   [`docs/LSPDFR.md`](docs/LSPDFR.md)).
 
-See [`docs/INTEGRATION.md`](docs/INTEGRATION.md) for the patterns the main mod should use.
+See [`docs/INTEGRATION.md`](docs/INTEGRATION.md) for the patterns to use when adding to it.

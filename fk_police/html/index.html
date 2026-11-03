@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>LSPD Mobile Data Terminal</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main id="mdt" class="is-hidden" aria-hidden="true">
+    <header>
+      <div class="brand">
+        <span class="badge">LSPD</span>
+        <div>
+          <h1>Mobile Data Terminal</h1>
+          <p id="officer">Cadet &middot; 0 XP</p>
+        </div>
+      </div>
+      <div class="calls">
+        <span id="duty" class="pill">OFF DUTY</span>
+        <button id="close" class="ghost" type="button">Close (Esc)</button>
+      </div>
+    </header>
+
+    <nav>
+      <button class="tab is-active" data-tab="people" type="button">Person lookup</button>
+      <button class="tab" data-tab="vehicles" type="button">Vehicle lookup</button>
+      <button class="tab" data-tab="calls" type="button">Calls</button>
+      <button class="tab" data-tab="charges" type="button">Charges</button>
+      <button class="tab" data-tab="backup" type="button">Backup</button>
+    </nav>
+
+    <section class="panel is-active" id="panel-people">
+      <form class="search" id="form-people">
+        <input id="query-people" type="text" placeholder="Name, e.g. Marcus Vance" autocomplete="off" />
+        <button type="submit">Run name</button>
+      </form>
+      <p class="hint">Records show licence status, warrants and flags.</p>
+    </section>
+
+    <section class="panel" id="panel-vehicles">
+      <form class="search" id="form-vehicles">
+        <input id="query-vehicles" type="text" placeholder="Plate, e.g. MARCUS1" autocomplete="off" />
+        <button type="submit">Run plate</button>
+      </form>
+      <p class="hint">Stolen, registration and insurance flags come from the vehicle record.</p>
+    </section>
+
+    <section class="panel" id="panel-calls">
+      <div id="calls-body"><p class="hint">No callout on the board.</p></div>
+    </section>
+
+    <section class="panel" id="panel-charges">
+      <table>
+        <thead><tr><th>Id</th><th>Charge</th><th>Fine</th><th>Jail</th><th>Type</th></tr></thead>
+        <tbody id="charges-body"></tbody>
+      </table>
+      <p class="hint">Use /cite &lt;id...&gt; or /arrest &lt;id...&gt; on a stopped vehicle.</p>
+    </section>
+
+    <section class="panel" id="panel-backup">
+      <div class="backup-grid" id="backup-body"></div>
+      <p class="hint">Backup units spawn nearby and drive to you.</p>
+    </section>
+
+    <section id="results" class="results"></section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

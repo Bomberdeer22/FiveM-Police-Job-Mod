@@ -182,6 +182,17 @@ function createHarness(options = {}) {
   lua.lua_setfield(L, -2, to_luastring('date'));
   lua.lua_pop(L, 1);
 
+  // A clock the tests can move, so a 20-second join warning does not cost 20
+  // seconds of test time.
+  let clock = 1760000000;
+  lua.lua_getglobal(L, to_luastring('os'));
+  lua.lua_pushcfunction(L, (S) => {
+    lua.lua_pushnumber(S, clock);
+    return 1;
+  });
+  lua.lua_setfield(L, -2, to_luastring('time'));
+  lua.lua_pop(L, 1);
+
   // Short timers (save debounce) run inline; long ones (join fallback) are
   // queued so the tests decide when they fire.
   setGlobal('SetTimeout', () => {
@@ -307,6 +318,14 @@ function createHarness(options = {}) {
     }
   });
 
+  function runLua(code, label) {
+    const buffer = to_luastring(code);
+    const status = lauxlib.luaL_loadbuffer(L, buffer, buffer.length, to_luastring('@' + (label || 'harness')));
+    if (status !== lua.LUA_OK) throw new Error('harness snippet failed to compile: ' + to_jsstring(lua.lua_tostring(L, -1)));
+    const call = lua.lua_pcall(L, 0, 0, 0);
+    if (call !== lua.LUA_OK) throw new Error('harness snippet failed: ' + to_jsstring(lua.lua_tostring(L, -1)));
+  }
+
   function setGlobalValue(name, value) {
     pushJs(value);
     lua.lua_setglobal(L, to_luastring(name));
@@ -348,6 +367,18 @@ function createHarness(options = {}) {
     runTimers() {
       const timers = captured.timers.splice(0, captured.timers.length);
       timers.forEach((timer) => callRef(timer.fnRef));
+    },
+    advance(seconds) { clock += Number(seconds) || 0; },
+    setConfig(pathName, value) {
+      const literal = JSON.stringify(value);
+      runLua(`Config.${pathName} = ${literal === null ? 'nil' : literal}`, 'setConfig');
+    },
+    config(pathName) {
+      runLua(`fkConfigProbe = Config.${pathName}`, 'config-probe');
+      lua.lua_getglobal(L, to_luastring('fkConfigProbe'));
+      const value = luaToJs(-1);
+      lua.lua_settop(L, 0);
+      return value;
     },
     playerState(id, key) {
       const ref = playerStateRefs[id];
@@ -800,6 +831,38 @@ const streamingReply = streamingOnly.captured.client
 check('/joinstatus explains a client that never started',
   !!streamingReply && /still streaming resources/.test(streamingReply.args[0]),
   streamingReply && streamingReply.args);
+
+// --- single player ---------------------------------------------------------
+const onePlayer = createHarness();
+onePlayer.runThreads();
+onePlayer.setConfig('Singleplayer', true);
+onePlayer.setConfig('Spawn.diagnostics.clientWarnAfter', 5);
+onePlayer.fireEvent('playerConnecting', 2, ['Player2']);
+onePlayer.fireEvent('playerJoining', 2);
+onePlayer.advance(30);
+onePlayer.runTimers();
+onePlayer.advance(30);
+onePlayer.runTimers();
+onePlayer.advance(30);
+onePlayer.runTimers();
+const warnings = onePlayer.captured.logs.filter((line) => /has been connected for/.test(line));
+check('the spawn manager is single-player by default', onePlayer.config('Singleplayer') === true);
+check('a single-player join warning is printed once, not every 15 s',
+  warnings.length === 1, warnings);
+
+const manyPlayers = createHarness();
+manyPlayers.runThreads();
+manyPlayers.setConfig('Singleplayer', false);
+manyPlayers.setConfig('Spawn.diagnostics.clientWarnAfter', 5);
+manyPlayers.fireEvent('playerConnecting', 2, ['Player2']);
+manyPlayers.fireEvent('playerJoining', 2);
+manyPlayers.advance(30);
+manyPlayers.runTimers();
+manyPlayers.advance(30);
+manyPlayers.runTimers();
+const repeats = manyPlayers.captured.logs.filter((line) => /has been connected for/.test(line));
+check('turning Singleplayer off brings the repeating warning back',
+  repeats.length >= 2, repeats);
 
 check('the client announces itself on start',
   /TriggerServerEvent\('fk_spawn:server:hello'\)/.test(

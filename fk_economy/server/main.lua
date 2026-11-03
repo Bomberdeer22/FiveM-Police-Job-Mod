@@ -160,6 +160,9 @@ end
 
 --- @return boolean allowed
 local function allow(name, src)
+    -- One player on this server: nothing to protect the server *from*.
+    if Config.Singleplayer then return true end
+
     local limiter = limits[name]
 
     if not limiter then return true end

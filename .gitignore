@@ -14,6 +14,10 @@ fk_spawn/data/*.tmp
 fk_house/data/*.json
 fk_house/data/*.tmp
 
+# Runtime police records (citations, arrests, officer XP)
+fk_police/data/*.json
+fk_police/data/*.tmp
+
 # OS / editor noise
 .DS_Store
 Thumbs.db
