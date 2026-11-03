@@ -10,6 +10,7 @@ live in are built and tested.
 fk_economy/          <- the economy resource (the money dependency)
 fk_spawn/            <- spawn manager: players wake up in Michael's bedroom
 fk_house/            <- Michael's mansion: wardrobe, kitchen, shower, bed, living room, garage
+fk_boot/             <- starts heavy packs (vehicle/map) after boot, so txAdmin stops killing the server
 preview/             <- dev-only browser preview of the UI (not shipped to the server)
 ```
 
@@ -521,6 +522,63 @@ in game to fine-tune it.
 
 ---
 
+## fk_boot
+
+A big vehicle or map pack (hundreds of `.yft`/`.ytd` files) can take minutes to load.
+FiveM loads everything in `server.cfg` **before** the server answers on its HTTP port, and
+txAdmin gives each resource a *Resource Starting Tolerance* — 1m30s by default — after
+which it restarts the server:
+
+```
+[tx:FxMonitor] - Resource "fk_house" has been loading for 39s.
+[tx:FxMonitor] Resource "fk_house" failed to start within the 1m30s time limit
+```
+
+**The resource named there is not the slow one.** txAdmin records the last resource it was
+*told* about (`onResourceStarting`). A pack that blocks the server never gets to send its
+own event, so the blame lands on the resource before it — in the log above `fk_house`
+printed `1 saved vehicle(s) loaded` and `Started resource fk_house` in the same second,
+while `Starting resource military` never finished. Removing the pack from the cfg is one
+fix; `fk_boot` is the other, and it keeps the pack.
+
+### Install
+
+```cfg
+# server.cfg
+# ensure military      <- remove this line, fk_boot starts it instead
+ensure fk_economy
+ensure fk_spawn
+ensure fk_house
+ensure fk_boot         <- last line, so the delay starts after the rest of the boot
+```
+
+```lua
+-- fk_boot/config.lua
+Config.Deferred = {
+    enabled = true,
+    packs = { 'military' },   -- exact folder names, start order
+    delay = 10000,            -- ms after fk_boot starts before the first pack
+    gap = 2000,               -- ms between two packs
+    skipIfStarted = true,     -- leave a pack alone if something already started it
+}
+```
+
+The server boots, the HTTP endpoint comes up, players can connect — and then the pack is
+started in the background without the boot clock running.
+
+| What | Where |
+| --- | --- |
+| `boot_list` | Chat or console: every deferred pack and its current state |
+| `boot_start <resource>` | Console / ACE-authorized: start one pack immediately |
+| `exports.fk_boot:GetDeferredPacks()` | The configured list |
+| `exports.fk_boot:GetDeferredState()` | `{ [name] = 'stopped' \| 'started' \| 'missing' }` |
+| `exports.fk_boot:StartDeferredNow()` | Start them all now; returns the result per pack |
+
+If you would rather keep `ensure military` in `server.cfg`, raise txAdmin's limit instead:
+**Settings → FXServer → Show Advanced → Resource Starting Tolerance** (1.5 min → 10 min).
+
+---
+
 ## Hardening (all three resources)
 
 The three resources share the same small `shared/core.lua` (an identical copy in each,
@@ -614,7 +672,7 @@ Consumables, services and vehicles are *not* stored (they are used at the till);
 
 `.github/workflows/tests.yml` runs `npm run check` on every push and pull request: it
 compiles all 25 Lua files with fengari (`tools/lint-lua.js`), then runs the five test
-suites (377 checks) against a real Lua VM and jsdom.
+suites (410 checks) against a real Lua VM and jsdom.
 
 ---
 
@@ -641,7 +699,7 @@ with mocked FiveM natives, and the NUI page runs in jsdom.
 
 ```bash
 npm install
-npm run check   # lint every Lua file + all 377 checks
+npm run check   # lint every Lua file + all 410 checks
 ```
 
 * **123 economy checks** — starting balances, overdraft refusal, invalid
@@ -659,6 +717,10 @@ npm run check   # lint every Lua file + all 377 checks
 * **33 UI checks** — money formatting, HUD rendering, menu/tab flow, drag mode,
   preset saving, staff selection, give/take confirmation, toasts, price list,
   delta pills, hidden-HUD behaviour.
+* **33 fk_boot checks** — the deferred pack list, nothing starting before the delay,
+  packs starting in order and once only, a pack that is already running or still starting
+  being left alone, a misspelled or uninstalled pack being reported instead of started, a
+  refused `StartResource`, the three exports, and both console commands.
 * **14 preview checks** — the `preview/` harness boots and drives the same UI.
 * **152 house checks** — the six spots and their types, coordinates checked against
   the game's own interior data (each spot must land in its room and on its floor),
@@ -685,6 +747,7 @@ npm run check   # lint every Lua file + all 377 checks
 
 | Symptom | Cause / fix |
 | --- | --- |
+| **`Resource "fk_house" failed to start within the 1m30s time limit` (txAdmin restarts the server)** | txAdmin names the last resource it was told about, not the slow one: a heavy pack that blocks the boot never reports itself. Look at the last `Starting resource …` line in the console — that is the one. Either raise **Settings → FXServer → Show Advanced → Resource Starting Tolerance**, or move the pack to [`fk_boot`](#fk_boot) and remove it from `server.cfg`. The `fk_house` line right before it (`N saved vehicle(s) loaded`) proves fk_house started in the same second it was asked to. |
 | **Black (or white) box behind the HUD or menu** | The page must render over the game with no background. `html, body` are forced transparent, and **`backdrop-filter` must not be used** — FiveM's CEF does not support it and paints a hard black rectangle behind the element. If you add custom CSS, avoid `backdrop-filter`, `filter` and `mix-blend-mode`. |
 | **Console: `attempt to call a nil value (global 'StaffCount')` / `'StaffRosterIsEmpty'` / `'IsStaff'`** | Your deployed copy is out of date: `server/staff.lua` is not being loaded. Re-copy the **whole** `fk_economy` folder (the file *and* `fxmanifest.lua`, which must list `server/staff.lua` before `server/main.lua`) and `restart fk_economy`. From v0.2.0 the resource prints a red `server/staff.lua was not loaded!` banner instead of crashing. |
 | **HUD never appears** | It stays hidden until the server sends balances. If the server threw an error in `PushState` the client gets nothing — check the console for the banner above. The client re-requests state every 5s for 40s, then gives up until the resource restarts. |
