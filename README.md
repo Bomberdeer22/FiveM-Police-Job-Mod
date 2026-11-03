@@ -703,7 +703,7 @@ Consumables, services and vehicles are *not* stored (they are used at the till);
 
 `.github/workflows/tests.yml` runs `npm run check` on every push and pull request: it
 compiles all 25 Lua files with fengari (`tools/lint-lua.js`), then runs the five test
-suites (430 checks) against a real Lua VM and jsdom.
+suites (454 checks) against a real Lua VM and jsdom.
 
 ---
 
@@ -723,6 +723,48 @@ the real resource page is fully transparent, so nothing is drawn behind the HUD
 in-game. `preview/` is not referenced by `fxmanifest.lua` and is safe to leave out
 of a deploy.
 
+## Finding the one bad vehicle
+
+A **single** broken model is enough to leave FiveM at 100% on the loading screen — the
+pack does not have to be big. `tools/scan-pack.js` reads the pack on disk and names the
+culprit, which matters when the client's F8 console is unreachable:
+
+```bash
+node tools/scan-pack.js resources/[vehicles]/military   # one pack (+ its neighbours)
+node tools/scan-pack.js resources                       # every resource, cross-checked
+node tools/scan-pack.js <pack> --json                   # machine-readable
+npm run scan -- resources/[vehicles]/military           # same thing
+```
+
+It only reads; nothing is changed. Exit code is `1` when there is an error, so it can gate
+a deploy.
+
+| Finding | What it means |
+| --- | --- |
+| `ERROR missing-file` | a `<modelName>` in `vehicles.meta` with no `<model>.yft` in the pack — the client waits for a file that never arrives |
+| `ERROR missing-handling` | a `<handlingId>` that no `<handlingName>` in `handling.meta` defines (the classic copy-paste between packs) — the client freezes while loading that vehicle |
+| `ERROR duplicate-model` | the same model name, or the same `.yft`, in two resources — the client streams one and waits for the other |
+| `ERROR empty-file` | a 0-byte `.yft`/`.ytd` (an interrupted copy) |
+| `ERROR malformed-meta` | unbalanced `<Item>` tags, or a truncated/binary `.meta` |
+| `WARN huge-texture` | a `.ytd` over 16 MB, or an asset over 32 MB |
+| `WARN bad-name` | a model name that is not lowercase `a-z`, `0-9`, `_` |
+| `WARN orphan-model` | a streamed `.yft` that no `vehicles.meta` declares |
+
+```
+military  (1187.4 MB, 842 files, 48 models, resources/[vehicles]/military)
+  ERROR  model "mrap" (data/vehicles.meta) has no mrap.yft in this pack
+  ERROR  handlingId "MRAP" (data/vehicles.meta) is not defined by any <handlingName>
+         in this pack - the client freezes while loading that vehicle
+  WARN   stream/mrap.ytd is 17.0 MB - clients stream this every spawn
+
+2 problem(s), 1 warning(s).
+Fix the ERROR lines first: one bad model is enough to leave a client at 100%.
+```
+
+Fix the ERROR lines, restart, and the client loads again. If the scanner is clean but a
+client still sits at 100%, the pack is simply bigger than that connection can stream
+(`fk_spawn` will say so in the console — see [Is my client stuck, and where?](#is-my-client-stuck-and-where)).
+
 ## Testing
 
 The resource is executed for real in CI-friendly form: the Lua runs inside a Lua VM
@@ -730,7 +772,7 @@ with mocked FiveM natives, and the NUI page runs in jsdom.
 
 ```bash
 npm install
-npm run check   # lint every Lua file + all 430 checks
+npm run check   # lint every Lua file + all 454 checks
 ```
 
 * **123 economy checks** — starting balances, overdraft refusal, invalid
@@ -755,6 +797,10 @@ npm run check   # lint every Lua file + all 430 checks
   (a connection during the start is held and told which pack it is waiting for, is let in
   when the packs are up, is not held afterwards, is not held at all with `gateJoins = false`
   or with nothing deferred, and is released with an explanation if the pack never starts).
+* **24 pack scan checks** — fixture packs with a missing `.yft`, a missing handling entry, a
+  0-byte asset, an oversized `.ytd`, an orphan model, a truncated meta, and the same model in
+  two resources; plus the CLI (`--json`, `--duplicates-only`, a clean pack exiting 0, a bad
+  pack exiting 1, usage and missing folder).
 * **14 preview checks** — the `preview/` harness boots and drives the same UI.
 * **152 house checks** — the six spots and their types, coordinates checked against
   the game's own interior data (each spot must land in its room and on its floor),
@@ -783,6 +829,7 @@ npm run check   # lint every Lua file + all 430 checks
 
 | Symptom | Cause / fix |
 | --- | --- |
+| **One vehicle in a pack makes clients hang at 100%** | Run `node tools/scan-pack.js <pack>` — it names the model. The usual culprits are a `<modelName>` with no `.yft` in the pack, a `<handlingId>` that `handling.meta` does not define, the same model in two resources, or a 0-byte `.ytd`. See [Finding the one bad vehicle](#finding-the-one-bad-vehicle). |
 | **FiveM sits at 100% on the loading screen** | At 100% the client has finished asking for resources and is still streaming them — our scripts have not run yet. Check **which** side is stuck: the server console prints `client scripts are up after Ns` when the client gets in. If that line never appears (or the console warns that the scripts have NOT started), the pack is the problem, not the spawn: it is too big for the client to stream in reasonable time, it has duplicate model names, or a `.yft`/`.ytd` in it is corrupt. Test with the pack removed — if it loads, bisect the pack's `stream/` folder. If the line *does* appear but the join never completes, the console says `client scripts are up but the spawn has not completed` and `/joinstatus` shows the stage — that is ours, and the spawn point is the first thing to check. Also make sure **the pack is not being restarted while you are connecting**: `fk_boot` holds connections until its packs are up for exactly this reason. |
 | **`Resource "fk_house" failed to start within the 1m30s time limit` (txAdmin restarts the server)** | txAdmin names the last resource it was told about, not the slow one: a heavy pack that blocks the boot never reports itself. Look at the last `Starting resource …` line in the console — that is the one. Either raise **Settings → FXServer → Show Advanced → Resource Starting Tolerance**, or move the pack to [`fk_boot`](#fk_boot) and remove it from `server.cfg`. The `fk_house` line right before it (`N saved vehicle(s) loaded`) proves fk_house started in the same second it was asked to. |
 | **Black (or white) box behind the HUD or menu** | The page must render over the game with no background. `html, body` are forced transparent, and **`backdrop-filter` must not be used** — FiveM's CEF does not support it and paints a hard black rectangle behind the element. If you add custom CSS, avoid `backdrop-filter`, `filter` and `mix-blend-mode`. |
